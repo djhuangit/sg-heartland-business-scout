@@ -109,3 +109,37 @@ export interface AreaAnalysis {
   monitoringStarted: string;
   lastScannedAt: string;
 }
+
+// --- Workflow Visualizer Types (SSE from backend) ---
+
+export interface WorkflowEvent {
+  timestamp: string;
+  event_type: 'run_started' | 'node_started' | 'tool_result' | 'node_completed'
+    | 'delta_detected' | 'verification_flag' | 'run_completed' | 'run_failed';
+  node: string;
+  detail: Record<string, any>;
+}
+
+export interface ToolCallEntry {
+  tool: string;
+  url?: string;
+  status: 'pending' | 'VERIFIED' | 'UNAVAILABLE' | 'STALE';
+  error?: string;
+}
+
+export interface WorkflowNode {
+  id: string;
+  label: string;
+  status: 'pending' | 'running' | 'completed' | 'skipped' | 'failed';
+  toolCalls: ToolCallEntry[];
+  summary?: string;
+}
+
+export interface WorkflowRun {
+  town: string;
+  status: 'running' | 'completed' | 'failed';
+  nodes: WorkflowNode[];
+  deltas: Array<{ category: string; change: string; significance: string }>;
+  verificationFlags: Array<{ category: string; status: string; sources: string[] }>;
+  runSummary?: string;
+}

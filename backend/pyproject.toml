@@ -1,0 +1,28 @@
+[project]
+name = "backend"
+version = "0.1.0"
+description = "Add your description here"
+requires-python = ">=3.13"
+dependencies = [
+    "alembic>=1.18.3",
+    "apscheduler>=3.11.2",
+    "asyncpg>=0.31.0",
+    "fastapi>=0.128.3",
+    "httpx>=0.28.1",
+    "langchain-core>=1.2.9",
+    "langchain-google-genai>=4.2.0",
+    "langgraph>=1.0.8",
+    "psycopg2-binary>=2.9.11",
+    "pydantic>=2.12.5",
+    "pydantic-settings>=2.12.0",
+    "python-dotenv>=1.2.1",
+    "sqlalchemy>=2.0.46",
+    "sse-starlette>=3.2.0",
+    "uvicorn>=0.40.0",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.0.2",
+    "pytest-asyncio>=1.3.0",
+]

@@ -1,7 +1,7 @@
 
-import React, { useState, useEffect, useMemo } from 'react';
-import { analyzeTown, generateSpecificDossier } from './services/geminiService';
-import { ScoutStatus, AreaAnalysis, DiscoveryCategory, DataPoint, Recommendation } from './types';
+import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
+import { fetchAnalysis, generateSpecificDossier, createScoutStream } from './services/api';
+import { ScoutStatus, AreaAnalysis, DiscoveryCategory, DataPoint, Recommendation, WorkflowEvent, WorkflowNode, WorkflowRun } from './types';
 import { HDB_TOWNS, Icons } from './constants';
 import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, LineChart, Line, ReferenceLine, Legend } from 'recharts';
 
@@ -17,6 +17,18 @@ const RENTAL_TREND_DATA = [
   { name: 'Q2', v: 13.4 }
 ];
 
+const INITIAL_WORKFLOW_NODES: WorkflowNode[] = [
+  { id: 'marathon_observer', label: 'Marathon Observer', status: 'pending', toolCalls: [] },
+  { id: 'demographics_agent', label: 'Demographics Agent', status: 'pending', toolCalls: [] },
+  { id: 'commercial_agent', label: 'Commercial Agent', status: 'pending', toolCalls: [] },
+  { id: 'market_intel_agent', label: 'Market Intel Agent', status: 'pending', toolCalls: [] },
+  { id: 'source_verifier', label: 'Source Verifier', status: 'pending', toolCalls: [] },
+  { id: 'delta_detector', label: 'Delta Detector', status: 'pending', toolCalls: [] },
+  { id: 'knowledge_integrator', label: 'Knowledge Integrator', status: 'pending', toolCalls: [] },
+  { id: 'strategist', label: 'Strategist', status: 'pending', toolCalls: [] },
+  { id: 'persist', label: 'Persist', status: 'pending', toolCalls: [] },
+];
+
 const App: React.FC = () => {
   const [town, setTown] = useState(HDB_TOWNS[0]);
   const [status, setStatus] = useState<ScoutStatus>(ScoutStatus.IDLE);
@@ -24,6 +36,10 @@ const App: React.FC = () => {
   const [error, setError] = useState<string | null>(null);
   const [selectedLog, setSelectedLog] = useState<DiscoveryCategory | null>(null);
   const [showTimelineModal, setShowTimelineModal] = useState(false);
+
+  // Workflow visualizer state
+  const [workflowRun, setWorkflowRun] = useState<WorkflowRun | null>(null);
+  const eventSourceRef = useRef<EventSource | null>(null);
 
   // Recommendations Filter State
   const [recFilterCategory, setRecFilterCategory] = useState("All");
@@ -34,49 +50,186 @@ const App: React.FC = () => {
   const [customPrompt, setCustomPrompt] = useState("");
   const [isGeneratingCustom, setIsGeneratingCustom] = useState(false);
 
+  // Load analysis from backend on town change, fallback to localStorage
   useEffect(() => {
-    const saved = localStorage.getItem(STORAGE_KEY_PREFIX + town);
-    if (saved) {
-      setAnalysis(JSON.parse(saved));
-      setStatus(ScoutStatus.REPORTING);
-    } else {
-      setAnalysis(null);
-      setStatus(ScoutStatus.IDLE);
-    }
+    let cancelled = false;
+    fetchAnalysis(town)
+      .then((data) => {
+        if (!cancelled) {
+          setAnalysis(data);
+          setStatus(ScoutStatus.REPORTING);
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          const saved = localStorage.getItem(STORAGE_KEY_PREFIX + town);
+          if (saved) {
+            setAnalysis(JSON.parse(saved));
+            setStatus(ScoutStatus.REPORTING);
+          } else {
+            setAnalysis(null);
+            setStatus(ScoutStatus.IDLE);
+          }
+        }
+      });
+    return () => { cancelled = true; };
   }, [town]);
 
+  // Cache analysis in localStorage as offline backup
   useEffect(() => {
     if (analysis) {
       localStorage.setItem(STORAGE_KEY_PREFIX + analysis.town, JSON.stringify(analysis));
     }
   }, [analysis]);
 
+  const updateNodeStatus = useCallback((nodeId: string, newStatus: WorkflowNode['status'], summary?: string) => {
+    setWorkflowRun(prev => {
+      if (!prev) return prev;
+      return {
+        ...prev,
+        nodes: prev.nodes.map(n =>
+          n.id === nodeId ? { ...n, status: newStatus, ...(summary ? { summary } : {}) } : n
+        ),
+      };
+    });
+  }, []);
+
+  const addToolCall = useCallback((nodeId: string, tool: string, toolStatus: string, error?: string, url?: string) => {
+    setWorkflowRun(prev => {
+      if (!prev) return prev;
+      return {
+        ...prev,
+        nodes: prev.nodes.map(n =>
+          n.id === nodeId
+            ? { ...n, toolCalls: [...n.toolCalls, { tool, status: toolStatus as any, error, url }] }
+            : n
+        ),
+      };
+    });
+  }, []);
+
   const handleScout = async () => {
     setStatus(ScoutStatus.SCANNING);
     setError(null);
-    try {
-      const data = await analyzeTown(town, analysis || undefined);
-      setAnalysis(data);
-      setStatus(ScoutStatus.REPORTING);
-    } catch (err: any) {
-      console.error(err);
-      setError("Analysis sync failed. Check connection or API key.");
-      setStatus(ScoutStatus.ERROR);
+
+    // Initialize workflow run
+    const run: WorkflowRun = {
+      town,
+      status: 'running',
+      nodes: INITIAL_WORKFLOW_NODES.map(n => ({ ...n, toolCalls: [] })),
+      deltas: [],
+      verificationFlags: [],
+    };
+    setWorkflowRun(run);
+
+    // Close any previous EventSource
+    if (eventSourceRef.current) {
+      eventSourceRef.current.close();
     }
+
+    const es = createScoutStream(town);
+    eventSourceRef.current = es;
+
+    es.onmessage = (e) => {
+      try {
+        const event: WorkflowEvent = JSON.parse(e.data);
+
+        switch (event.event_type) {
+          case 'node_started':
+            updateNodeStatus(event.node, 'running');
+            break;
+
+          case 'tool_result':
+            addToolCall(
+              event.node,
+              event.detail.tool || event.detail.source || 'unknown',
+              event.detail.status || 'UNAVAILABLE',
+              event.detail.error,
+              event.detail.url,
+            );
+            break;
+
+          case 'node_completed':
+            updateNodeStatus(event.node, 'completed', event.detail?.reason);
+            // If strategist was skipped (started with status: skipped)
+            if (event.node === 'strategist' && event.detail?.status === 'skipped') {
+              updateNodeStatus('strategist', 'skipped', event.detail.reason);
+            }
+            break;
+
+          case 'verification_flag':
+            setWorkflowRun(prev => prev ? {
+              ...prev,
+              verificationFlags: [...prev.verificationFlags, {
+                category: event.detail.category,
+                status: event.detail.status,
+                sources: event.detail.sources || [],
+              }],
+            } : prev);
+            break;
+
+          case 'delta_detected':
+            setWorkflowRun(prev => prev ? {
+              ...prev,
+              deltas: [...prev.deltas, {
+                category: event.detail.category || 'unknown',
+                change: event.detail.change || event.detail.what_changed || '',
+                significance: event.detail.significance || 'LOW',
+              }],
+            } : prev);
+            break;
+
+          case 'run_completed':
+            es.close();
+            eventSourceRef.current = null;
+            setWorkflowRun(prev => prev ? {
+              ...prev,
+              status: 'completed',
+              runSummary: event.detail.run_summary,
+            } : prev);
+            // Fetch the completed analysis
+            fetchAnalysis(town)
+              .then(data => {
+                setAnalysis(data);
+                setStatus(ScoutStatus.REPORTING);
+              })
+              .catch(() => setStatus(ScoutStatus.REPORTING));
+            break;
+
+          case 'run_failed':
+            es.close();
+            eventSourceRef.current = null;
+            setWorkflowRun(prev => prev ? { ...prev, status: 'failed' } : prev);
+            setError(event.detail.error || 'Pipeline failed');
+            setStatus(ScoutStatus.ERROR);
+            break;
+        }
+      } catch (err) {
+        console.error('SSE parse error:', err);
+      }
+    };
+
+    es.onerror = () => {
+      es.close();
+      eventSourceRef.current = null;
+      // If we're still scanning, it means an unexpected disconnect
+      setStatus(prev => prev === ScoutStatus.SCANNING ? ScoutStatus.ERROR : prev);
+      setError(prev => prev || 'Connection to backend lost');
+    };
   };
 
   const handleGenerateCustom = async () => {
     if (!analysis || !customPrompt.trim()) return;
     setIsGeneratingCustom(true);
     try {
-      const newRec = await generateSpecificDossier(town, customPrompt, analysis);
+      const newRec = await generateSpecificDossier(town, customPrompt);
       const updatedAnalysis = {
         ...analysis,
         recommendations: [newRec, ...analysis.recommendations]
       };
       setAnalysis(updatedAnalysis);
       setCustomPrompt("");
-      setRecFilterCategory("All"); // Reset filter so user sees the new item
+      setRecFilterCategory("All");
     } catch (err) {
       console.error(err);
       alert("Failed to generate custom dossier. Please try again.");
@@ -319,15 +472,20 @@ const App: React.FC = () => {
             </div>
           )}
 
-          {status === ScoutStatus.SCANNING && (
-            <div className="h-full flex flex-col items-center justify-center bg-white rounded-xl border border-slate-200 p-20 text-center">
-              <div className="relative mb-8">
-                <div className="w-24 h-24 border-4 border-slate-100 border-t-red-600 rounded-full animate-spin shadow-inner" />
+          {status === ScoutStatus.SCANNING && workflowRun && (
+            <WorkflowVisualizer run={workflowRun} />
+          )}
+
+          {status === ScoutStatus.ERROR && error && (
+            <div className="h-full flex flex-col items-center justify-center bg-white rounded-xl border-2 border-red-200 p-20 text-center">
+              <div className="bg-red-50 p-4 rounded-full mb-4">
+                <Icons.Alert className="w-8 h-8 text-red-500" />
               </div>
-              <h3 className="text-xl font-bold text-slate-800 tracking-tight">Accessing Official Registries...</h3>
-              <p className="text-slate-500 max-w-sm mt-2 font-mono text-[10px] uppercase tracking-widest">
-                Scraping SingStat Census & URA Realis Benchmarks
-              </p>
+              <h3 className="text-lg font-bold text-slate-800">Pipeline Error</h3>
+              <p className="text-sm text-red-600 mt-2 max-w-md">{error}</p>
+              <button onClick={handleScout} className="mt-4 px-6 py-2 bg-red-600 text-white rounded-lg text-sm font-bold hover:bg-red-700">
+                Retry
+              </button>
             </div>
           )}
 
@@ -700,6 +858,157 @@ const App: React.FC = () => {
         .custom-scrollbar-dark::-webkit-scrollbar-track { background: #020617; }
         .custom-scrollbar-dark::-webkit-scrollbar-thumb { background: #334155; border-radius: 10px; }
       `}</style>
+    </div>
+  );
+};
+
+const WorkflowVisualizer: React.FC<{ run: WorkflowRun }> = ({ run }) => {
+  const getStatusIcon = (status: WorkflowNode['status']) => {
+    switch (status) {
+      case 'running':
+        return <div className="w-3 h-3 border-2 border-red-200 border-t-red-600 rounded-full animate-spin" />;
+      case 'completed':
+        return (
+          <div className="bg-green-100 p-0.5 rounded-full">
+            <svg className="w-2.5 h-2.5 text-green-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={4} d="M5 13l4 4L19 7" />
+            </svg>
+          </div>
+        );
+      case 'skipped':
+        return <div className="w-2.5 h-2.5 bg-slate-300 rounded-full" />;
+      case 'failed':
+        return <div className="w-2.5 h-2.5 bg-red-500 rounded-full" />;
+      default:
+        return <div className="w-2 h-2 bg-slate-200 rounded-full" />;
+    }
+  };
+
+  const getToolStatusBadge = (status: string) => {
+    if (status === 'VERIFIED') return 'bg-green-100 text-green-700 border-green-200';
+    if (status === 'UNAVAILABLE') return 'bg-red-100 text-red-700 border-red-200';
+    if (status === 'STALE') return 'bg-amber-100 text-amber-700 border-amber-200';
+    return 'bg-slate-100 text-slate-500 border-slate-200';
+  };
+
+  const completedCount = run.nodes.filter(n => n.status === 'completed' || n.status === 'skipped').length;
+  const totalNodes = run.nodes.length;
+
+  return (
+    <div className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
+      {/* Header */}
+      <div className="p-6 border-b border-slate-100 bg-slate-50/50">
+        <div className="flex justify-between items-center mb-3">
+          <h3 className="text-sm font-black uppercase tracking-[0.2em] text-slate-400 flex items-center gap-2">
+            <span className={`w-2 h-2 rounded-full ${run.status === 'running' ? 'bg-red-500 animate-pulse' : run.status === 'completed' ? 'bg-green-500' : 'bg-red-500'}`} />
+            Agent Marathon Pipeline
+          </h3>
+          <span className="text-[10px] font-mono text-slate-400 uppercase">{run.town}</span>
+        </div>
+        {/* Progress bar */}
+        <div className="w-full h-1.5 bg-slate-100 rounded-full overflow-hidden">
+          <div
+            className="h-full bg-gradient-to-r from-red-500 to-red-600 transition-all duration-500 ease-out rounded-full"
+            style={{ width: `${(completedCount / totalNodes) * 100}%` }}
+          />
+        </div>
+        <p className="text-[9px] font-mono text-slate-400 mt-2">{completedCount}/{totalNodes} nodes complete</p>
+      </div>
+
+      {/* Nodes */}
+      <div className="p-4 space-y-1">
+        {run.nodes.map(node => (
+          <div key={node.id} className={`p-3 rounded-lg transition-all ${node.status === 'running' ? 'bg-red-50/50 border border-red-100' : 'hover:bg-slate-50'}`}>
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-3">
+                {getStatusIcon(node.status)}
+                <span className={`text-xs font-bold uppercase tracking-wider ${
+                  node.status === 'running' ? 'text-red-600' :
+                  node.status === 'completed' ? 'text-slate-700' :
+                  node.status === 'skipped' ? 'text-slate-400' :
+                  'text-slate-300'
+                }`}>
+                  {node.label}
+                </span>
+              </div>
+              {node.summary && (
+                <span className="text-[9px] font-mono text-slate-400 truncate max-w-[200px]">{node.summary}</span>
+              )}
+            </div>
+
+            {/* Tool Calls */}
+            {node.toolCalls.length > 0 && (
+              <div className="mt-2 ml-6 flex flex-wrap gap-1.5">
+                {node.toolCalls.map((tc, idx) => (
+                  <span
+                    key={idx}
+                    className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-md border text-[8px] font-bold uppercase tracking-wider ${getToolStatusBadge(tc.status)}`}
+                    title={tc.error || tc.url || ''}
+                  >
+                    {tc.status === 'VERIFIED' ? (
+                      <svg className="w-2 h-2" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={4} d="M5 13l4 4L19 7" /></svg>
+                    ) : tc.status === 'UNAVAILABLE' ? (
+                      <svg className="w-2 h-2" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={4} d="M6 18L18 6M6 6l12 12" /></svg>
+                    ) : null}
+                    {tc.tool}
+                  </span>
+                ))}
+              </div>
+            )}
+          </div>
+        ))}
+      </div>
+
+      {/* Deltas panel */}
+      {run.deltas.length > 0 && (
+        <div className="px-4 pb-3">
+          <div className="p-3 bg-slate-900 rounded-lg">
+            <p className="text-[9px] font-black uppercase tracking-widest text-slate-400 mb-2">Changes Detected</p>
+            <div className="space-y-1">
+              {run.deltas.map((d, i) => (
+                <div key={i} className="flex items-center gap-2">
+                  <span className={`text-[8px] px-1.5 py-0.5 rounded font-black uppercase ${
+                    d.significance === 'HIGH' ? 'bg-red-900/50 text-red-400' :
+                    d.significance === 'MEDIUM' ? 'bg-amber-900/50 text-amber-400' :
+                    'bg-slate-800 text-slate-500'
+                  }`}>
+                    {d.significance}
+                  </span>
+                  <span className="text-[10px] text-slate-300 truncate">{d.change || d.category}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Verification flags */}
+      {run.verificationFlags.length > 0 && (
+        <div className="px-4 pb-4">
+          <div className="p-3 bg-amber-50 border border-amber-100 rounded-lg">
+            <p className="text-[9px] font-black uppercase tracking-widest text-amber-600 mb-2">Verification Flags</p>
+            <div className="space-y-1">
+              {run.verificationFlags.map((f, i) => (
+                <div key={i} className="flex items-center gap-2 text-[10px]">
+                  <Icons.Alert className="w-3 h-3 text-amber-500 flex-shrink-0" />
+                  <span className="font-bold text-amber-700">{f.category}</span>
+                  <span className="text-amber-600">— {f.status}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Run complete summary */}
+      {run.status === 'completed' && run.runSummary && (
+        <div className="px-4 pb-4">
+          <div className="p-3 bg-green-50 border border-green-100 rounded-lg">
+            <p className="text-[9px] font-black uppercase tracking-widest text-green-600 mb-1">Run Complete</p>
+            <p className="text-xs text-green-700">{run.runSummary}</p>
+          </div>
+        </div>
+      )}
     </div>
   );
 };
