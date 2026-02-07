@@ -1,0 +1,7 @@
+{
+  "name": "SG Heartland Business Scout",
+  "description": "An intelligent commercial opportunity scout for Singapore heartlands. It synthesizes HDB tenders, URA rental benchmarks, SFA licenses, and LTA foot traffic proxies to identify business gaps and investment theses.",
+  "requestFramePermissions": [
+    "geolocation"
+  ]
+}

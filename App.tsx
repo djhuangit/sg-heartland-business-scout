@@ -1,0 +1,983 @@
+
+import React, { useState, useEffect, useMemo } from 'react';
+import { analyzeTown, generateSpecificDossier } from './services/geminiService';
+import { ScoutStatus, AreaAnalysis, DiscoveryCategory, DataPoint, Recommendation } from './types';
+import { HDB_TOWNS, Icons } from './constants';
+import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, LineChart, Line, ReferenceLine, Legend } from 'recharts';
+
+const STORAGE_KEY_PREFIX = 'scout_sg_data_';
+
+// Mock data for the sidebar rental chart since realis data isn't fully structured in the LLM response yet
+const RENTAL_TREND_DATA = [
+  { name: 'Q1', v: 11.0 },
+  { name: 'Q2', v: 11.5 },
+  { name: 'Q3', v: 12.2 },
+  { name: 'Q4', v: 12.8 },
+  { name: 'Q1', v: 12.5 },
+  { name: 'Q2', v: 13.4 }
+];
+
+const App: React.FC = () => {
+  const [town, setTown] = useState(HDB_TOWNS[0]);
+  const [status, setStatus] = useState<ScoutStatus>(ScoutStatus.IDLE);
+  const [analysis, setAnalysis] = useState<AreaAnalysis | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [selectedLog, setSelectedLog] = useState<DiscoveryCategory | null>(null);
+  const [showTimelineModal, setShowTimelineModal] = useState(false);
+
+  // Recommendations Filter State
+  const [recFilterCategory, setRecFilterCategory] = useState("All");
+  const [recFilterScore, setRecFilterScore] = useState("0");
+  const [recSortBy, setRecSortBy] = useState("score_desc");
+
+  // Custom Dossier State
+  const [customPrompt, setCustomPrompt] = useState("");
+  const [isGeneratingCustom, setIsGeneratingCustom] = useState(false);
+
+  useEffect(() => {
+    const saved = localStorage.getItem(STORAGE_KEY_PREFIX + town);
+    if (saved) {
+      setAnalysis(JSON.parse(saved));
+      setStatus(ScoutStatus.REPORTING);
+    } else {
+      setAnalysis(null);
+      setStatus(ScoutStatus.IDLE);
+    }
+  }, [town]);
+
+  useEffect(() => {
+    if (analysis) {
+      localStorage.setItem(STORAGE_KEY_PREFIX + analysis.town, JSON.stringify(analysis));
+    }
+  }, [analysis]);
+
+  const handleScout = async () => {
+    setStatus(ScoutStatus.SCANNING);
+    setError(null);
+    try {
+      const data = await analyzeTown(town, analysis || undefined);
+      setAnalysis(data);
+      setStatus(ScoutStatus.REPORTING);
+    } catch (err: any) {
+      console.error(err);
+      setError("Analysis sync failed. Check connection or API key.");
+      setStatus(ScoutStatus.ERROR);
+    }
+  };
+
+  const handleGenerateCustom = async () => {
+    if (!analysis || !customPrompt.trim()) return;
+    setIsGeneratingCustom(true);
+    try {
+      const newRec = await generateSpecificDossier(town, customPrompt, analysis);
+      const updatedAnalysis = {
+        ...analysis,
+        recommendations: [newRec, ...analysis.recommendations]
+      };
+      setAnalysis(updatedAnalysis);
+      setCustomPrompt("");
+      setRecFilterCategory("All"); // Reset filter so user sees the new item
+    } catch (err) {
+      console.error(err);
+      alert("Failed to generate custom dossier. Please try again.");
+    } finally {
+      setIsGeneratingCustom(false);
+    }
+  };
+
+  const isStale = analysis && new Date(analysis.lastScannedAt).toLocaleDateString() !== new Date().toLocaleDateString();
+
+  const filteredRecommendations = useMemo(() => {
+    if (!analysis) return [];
+    
+    let result = analysis.recommendations.filter(rec => {
+      const matchesCategory = recFilterCategory === "All" || rec.category === recFilterCategory;
+      const matchesScore = rec.opportunityScore >= parseInt(recFilterScore);
+      return matchesCategory && matchesScore;
+    });
+
+    return result.sort((a, b) => {
+      switch (recSortBy) {
+        case 'cost_asc':
+          return a.financials.upfrontCost - b.financials.upfrontCost;
+        case 'cost_desc':
+          return b.financials.upfrontCost - a.financials.upfrontCost;
+        case 'rev_desc':
+          return b.financials.monthlyRevenueAvg - a.financials.monthlyRevenueAvg;
+        case 'score_asc':
+          return a.opportunityScore - b.opportunityScore;
+        case 'score_desc':
+        default:
+          return b.opportunityScore - a.opportunityScore;
+      }
+    });
+  }, [analysis, recFilterCategory, recFilterScore, recSortBy]);
+
+  const getTenderBadgeStyle = (status: string) => {
+    const s = (status || 'NA').toUpperCase();
+    if (s === 'OPEN' || s === 'LIVE') return 'bg-red-600 text-white';
+    if (s === 'AWARDED') return 'bg-blue-600 text-white';
+    if (s === 'CLOSED') return 'bg-slate-600 text-white';
+    return 'bg-slate-200 text-slate-500';
+  };
+
+  const getDomain = (url: string) => {
+    try {
+      return new URL(url).hostname.replace('www.', '');
+    } catch {
+      return 'Web Source';
+    }
+  };
+
+  return (
+    <div className="min-h-screen bg-slate-50 text-slate-900 overflow-x-hidden pb-12">
+      <header className="sticky top-0 z-50 bg-white border-b border-slate-200 px-6 py-4 flex items-center justify-between shadow-sm">
+        <div className="flex items-center gap-3">
+          <div className="bg-red-600 p-2 rounded-lg shadow-inner">
+            <Icons.Map className="w-6 h-6 text-white" />
+          </div>
+          <div>
+            <h1 className="text-xl font-bold tracking-tight">Heartland Scout <span className="text-red-600">SG</span></h1>
+            <p className="text-xs text-slate-500 font-medium uppercase tracking-tighter">
+              {analysis ? `Monitoring ${analysis.town} since ${analysis.monitoringStarted}` : 'Business Intelligence Engine'}
+            </p>
+          </div>
+        </div>
+        <div className="flex gap-4">
+          <select 
+            value={town}
+            onChange={(e) => setTown(e.target.value)}
+            className="bg-slate-100 border-none rounded-md px-4 py-2 text-sm font-semibold focus:ring-2 focus:ring-red-500 min-w-[200px]"
+          >
+            {HDB_TOWNS.map(t => <option key={t} value={t}>{t}</option>)}
+          </select>
+          <button 
+            onClick={handleScout}
+            disabled={status === ScoutStatus.SCANNING}
+            className={`px-8 py-2 rounded-md text-sm font-bold transition-all disabled:opacity-50 flex items-center gap-2 shadow-sm ${
+              isStale ? 'bg-orange-600 hover:bg-orange-700 animate-pulse' : 'bg-red-600 hover:bg-red-700'
+            } text-white`}
+          >
+            {status === ScoutStatus.SCANNING ? 'Syncing...' : isStale ? 'Sync for Today' : 'Identify Gaps'}
+            <Icons.Search className="w-4 h-4" />
+          </button>
+        </div>
+      </header>
+
+      <main className="max-w-7xl mx-auto p-6 grid grid-cols-1 lg:grid-cols-12 gap-6">
+        
+        {/* Sidebar Feed - Left Column */}
+        <div className="lg:col-span-4 flex flex-col gap-6">
+          {/* Discovery Loop */}
+          <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-6 flex flex-col h-[520px]">
+            <div className="flex justify-between items-start mb-4">
+              <h2 className="text-sm font-bold uppercase tracking-wider text-slate-400">Discovery Loop</h2>
+              {analysis && (
+                <div className="flex items-center gap-1.5 px-2 py-0.5 bg-slate-50 border border-slate-100 rounded text-[9px] font-bold text-slate-500">
+                  <span className="w-1.5 h-1.5 bg-green-500 rounded-full" />
+                  PERSISTENT
+                </div>
+              )}
+            </div>
+            
+            <div className="flex items-center gap-4 mb-6 flex-shrink-0">
+              <div className={`relative w-12 h-12 rounded-full flex items-center justify-center ${status === ScoutStatus.SCANNING ? 'pulse-ring' : ''} bg-red-50`}>
+                <Icons.Map className="w-6 h-6 text-red-600" />
+              </div>
+              <div>
+                <p className="font-bold text-slate-800 leading-tight">
+                  {status === ScoutStatus.IDLE ? 'Awaiting Scan' : status === ScoutStatus.SCANNING ? 'Live Syncing...' : 'Archive Active'}
+                </p>
+                <p className="text-[10px] text-slate-500 uppercase font-mono mt-1">
+                  Context: {town.toUpperCase()}
+                </p>
+              </div>
+            </div>
+
+            <div className="flex-grow overflow-y-auto space-y-5 pr-2 custom-scrollbar">
+              <LoopItem label="HDB Tender Inventory" active={status === ScoutStatus.SCANNING} done={!!analysis} category={analysis?.discoveryLogs?.tenders} onOpenModal={setSelectedLog} />
+              <LoopItem label="Retail Mix Saturation" active={status === ScoutStatus.SCANNING} done={!!analysis} category={analysis?.discoveryLogs?.saturation} onOpenModal={setSelectedLog} />
+              <LoopItem label="Area Saturation Analysis" active={status === ScoutStatus.SCANNING} done={!!analysis} category={analysis?.discoveryLogs?.areaSaturation} onOpenModal={setSelectedLog} />
+              <LoopItem label="Foot Traffic Proxies" active={status === ScoutStatus.SCANNING} done={!!analysis} category={analysis?.discoveryLogs?.traffic} onOpenModal={setSelectedLog} />
+              <LoopItem label="Rental Yield Potential" active={status === ScoutStatus.SCANNING} done={!!analysis} category={analysis?.discoveryLogs?.rental} onOpenModal={setSelectedLog} />
+            </div>
+          </div>
+
+          {analysis && (
+            <>
+              {/* Open HDB Commercial Tenders - Sidebar Version */}
+              <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-5">
+                <h3 className="font-black text-slate-900 mb-4 flex items-center gap-2 uppercase tracking-[0.2em] text-[10px]">
+                  <Icons.Alert className="w-3 h-3 text-red-600" />
+                  Open HDB Tenders
+                </h3>
+                <div className="space-y-3 overflow-y-auto max-h-[240px] pr-1 custom-scrollbar">
+                  {analysis.activeTenders && analysis.activeTenders.length > 0 ? (
+                    analysis.activeTenders.map((t, idx) => (
+                      <div key={idx} className="p-3 bg-slate-50 rounded-xl border border-slate-100 group hover:border-red-200 transition-all cursor-pointer relative overflow-hidden">
+                        <div className="flex justify-between items-start mb-1">
+                          <span className="font-bold text-[11px] text-slate-800">Blk {t.block} Unit</span>
+                          <span className={`text-[7px] px-2 py-0.5 rounded-full font-black ${getTenderBadgeStyle(t.status)}`}>
+                            {t.status || 'NA'}
+                          </span>
+                        </div>
+                        <p className="text-[10px] text-slate-500 truncate mb-2">{t.street}</p>
+                        <div className="flex justify-between items-center text-[9px] font-mono">
+                           <span className="text-slate-400 font-bold">{t.areaSqft} SQFT</span>
+                           <span className="text-red-600 font-black">By: {t.closingDate}</span>
+                        </div>
+                      </div>
+                    ))
+                  ) : (
+                    <div className="py-8 text-center bg-slate-50 rounded-xl border border-dashed border-slate-200">
+                      <p className="text-[9px] text-slate-400 font-bold uppercase tracking-widest px-4 italic leading-relaxed">No active tenders identified.</p>
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              {/* Rental Growth Trajectory - Sidebar Version */}
+              <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-5 flex flex-col">
+                 <h3 className="font-black text-slate-900 mb-4 uppercase tracking-[0.2em] text-[10px]">Rental Growth (URA)</h3>
+                 <div className="h-[140px] w-full -ml-3">
+                    <ResponsiveContainer width="100%" height="100%">
+                      <AreaChart data={RENTAL_TREND_DATA} margin={{ top: 5, right: 0, bottom: 5, left: 0 }}>
+                        <defs>
+                          <linearGradient id="colorV" x1="0" y1="0" x2="0" y2="1">
+                            <stop offset="5%" stopColor="#ef4444" stopOpacity={0.2}/>
+                            <stop offset="95%" stopColor="#ef4444" stopOpacity={0}/>
+                          </linearGradient>
+                        </defs>
+                        <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
+                        <XAxis 
+                          dataKey="name" 
+                          tick={{fontSize: 9, fill: '#94a3b8'}} 
+                          axisLine={true} 
+                          tickLine={true} 
+                          interval={1}
+                        />
+                        <YAxis 
+                          domain={['dataMin - 1', 'dataMax + 1']} 
+                          tick={{fontSize: 9, fill: '#94a3b8'}} 
+                          width={25} 
+                          axisLine={true} 
+                          tickLine={true} 
+                        />
+                        <Area type="monotone" dataKey="v" stroke="#ef4444" fillOpacity={1} fill="url(#colorV)" strokeWidth={2} />
+                      </AreaChart>
+                    </ResponsiveContainer>
+                 </div>
+                 <p className="text-[8px] text-slate-400 text-center font-bold uppercase tracking-widest mt-1">Historical Realis Benchmarking (Index)</p>
+              </div>
+            </>
+          )}
+
+          {/* Pulse Timeline */}
+          <div 
+            onClick={() => analysis && setShowTimelineModal(true)}
+            className={`bg-slate-900 rounded-xl shadow-lg p-6 text-white overflow-hidden relative h-[400px] flex flex-col ${analysis ? 'cursor-pointer hover:ring-2 hover:ring-red-500/50 transition-all' : ''}`}
+          >
+             <div className="absolute top-0 right-0 p-4 opacity-10 pointer-events-none">
+               <Icons.TrendUp className="w-32 h-32" />
+             </div>
+             <div className="flex justify-between items-center mb-6 flex-shrink-0">
+                <h2 className="text-sm font-bold uppercase tracking-wider text-slate-400 flex items-center gap-2">
+                  <span className={`w-2 h-2 rounded-full ${status === ScoutStatus.SCANNING ? 'bg-orange-500 animate-pulse' : 'bg-red-500'}`} />
+                  Pulse Timeline
+                </h2>
+             </div>
+             <div className="flex-grow overflow-y-auto space-y-6 pr-2 custom-scrollbar-dark">
+                {!analysis ? (
+                  <div className="flex flex-col items-center justify-center py-16 text-slate-600 opacity-50">
+                    <Icons.Alert className="w-8 h-8 mb-2" />
+                    <p className="text-xs font-mono uppercase tracking-widest text-center px-4">Signals pending...</p>
+                  </div>
+                ) : (
+                  analysis.pulseTimeline.map((h, i) => (
+                    <div key={i} className="flex gap-4 relative pb-6 border-l border-slate-700 pl-4 ml-2 last:border-0 last:pb-0">
+                      <div className={`absolute -left-[5px] top-1 w-2 h-2 rounded-full ring-4 ring-slate-900 ${h.impact === 'positive' ? 'bg-green-500' : h.impact === 'negative' ? 'bg-red-500' : 'bg-slate-400'}`} />
+                      <div>
+                        <p className="text-[10px] font-mono text-slate-500 mb-1">{h.timestamp}</p>
+                        <p className="text-sm leading-relaxed text-slate-300 font-medium">{h.event}</p>
+                      </div>
+                    </div>
+                  ))
+                )}
+             </div>
+          </div>
+        </div>
+
+        {/* Intelligence Stream - Right Column */}
+        <div className="lg:col-span-8 space-y-6">
+          {status === ScoutStatus.IDLE && (
+            <div className="h-full flex flex-col items-center justify-center bg-white rounded-xl border-2 border-dashed border-slate-200 p-20 text-center">
+              <div className="bg-slate-50 p-6 rounded-full mb-6 shadow-inner">
+                <Icons.Map className="w-12 h-12 text-slate-300" />
+              </div>
+              <h3 className="text-xl font-bold text-slate-800 tracking-tight">Heartland Scout Engine</h3>
+              <p className="text-slate-500 max-w-sm mt-2 italic font-serif leading-relaxed">"Select a planning area to decode its DNA. We synthesize SingStat demographics with real-time commercial opportunities."</p>
+            </div>
+          )}
+
+          {status === ScoutStatus.SCANNING && (
+            <div className="h-full flex flex-col items-center justify-center bg-white rounded-xl border border-slate-200 p-20 text-center">
+              <div className="relative mb-8">
+                <div className="w-24 h-24 border-4 border-slate-100 border-t-red-600 rounded-full animate-spin shadow-inner" />
+              </div>
+              <h3 className="text-xl font-bold text-slate-800 tracking-tight">Accessing Official Registries...</h3>
+              <p className="text-slate-500 max-w-sm mt-2 font-mono text-[10px] uppercase tracking-widest">
+                Scraping SingStat Census & URA Realis Benchmarks
+              </p>
+            </div>
+          )}
+
+          {analysis && (
+            <>
+              {/* 1. Town Overview */}
+              <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-8">
+                <div className="flex justify-between items-start">
+                  <div>
+                    <h2 className="text-5xl font-black text-slate-900 uppercase tracking-tighter mb-2">{analysis.town}</h2>
+                    <p className="text-slate-600 font-medium text-xl leading-relaxed italic max-w-2xl">"{analysis.commercialPulse}"</p>
+                  </div>
+                  {isStale && (
+                    <span className="bg-orange-100 text-orange-700 px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-widest border border-orange-200 animate-pulse">Update Available</span>
+                  )}
+                </div>
+              </div>
+
+              {/* 2. Target Identity Widget */}
+              <div className="bg-slate-50/50 rounded-xl border border-slate-200 p-3 px-5 flex items-center justify-between group">
+                <div className="flex items-center gap-4">
+                  <div className="p-1.5 bg-white rounded-lg border border-slate-100 shadow-sm transition-all group-hover:border-red-200">
+                    <Icons.TrendUp className="w-4 h-4 text-slate-400 group-hover:text-red-500" />
+                  </div>
+                  <div>
+                    <p className="text-[8px] font-bold text-slate-400 uppercase tracking-[0.2em] mb-0.5">Primary Target Segment</p>
+                    <h3 className="text-sm font-medium text-slate-700 tracking-tight">{analysis.demographicsFocus}</h3>
+                  </div>
+                </div>
+                <div className="hidden sm:flex flex-col items-end border-l border-slate-200 pl-4 ml-4">
+                  <p className="text-[8px] font-bold text-slate-400 uppercase tracking-widest">Planning Area</p>
+                  <p className="text-xs font-semibold text-slate-500">{analysis.demographicData.planningArea || analysis.town}</p>
+                </div>
+              </div>
+
+              {/* 3. Consolidated Demographics & Wealth Intelligence */}
+              <div className="bg-slate-900 rounded-2xl shadow-xl overflow-hidden text-white border border-slate-800 transition-all hover:shadow-2xl">
+                <div className="p-8 border-b border-slate-800 flex justify-between items-center bg-slate-950/30">
+                  <h3 className="text-sm font-black uppercase tracking-[0.3em] text-red-500">Wealth & Population Intelligence</h3>
+                  <div className="flex gap-2">
+                    {isStale && (
+                      <div className="hidden sm:flex items-center gap-1.5 px-3 py-1 bg-amber-950/40 border border-amber-900/50 rounded text-[9px] font-black uppercase tracking-widest text-amber-500">
+                        <Icons.Alert className="w-3 h-3" />
+                        <span>Data: {new Date(analysis.lastScannedAt).toLocaleDateString()}</span>
+                      </div>
+                    )}
+                    {analysis.wealthMetrics.dataSourceUrl ? (
+                      <a href={analysis.wealthMetrics.dataSourceUrl} target="_blank" rel="noopener noreferrer" className="px-3 py-1 bg-slate-800 hover:bg-slate-700 transition-colors rounded text-[9px] font-black uppercase tracking-widest text-slate-400 flex items-center gap-2">
+                        SINGSTAT 2020/21
+                        <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" /></svg>
+                      </a>
+                    ) : (
+                      <span className="px-3 py-1 bg-slate-800 rounded text-[9px] font-black uppercase tracking-widest text-slate-400">SINGSTAT 2020/21</span>
+                    )}
+                    <span className="px-3 py-1 bg-red-600 rounded text-[9px] font-black uppercase tracking-widest text-white">{analysis.wealthMetrics.wealthTier}</span>
+                  </div>
+                </div>
+                
+                <div className="grid grid-cols-1 md:grid-cols-3 divide-y md:divide-y-0 md:divide-x divide-slate-800">
+                  {/* Wealth Column */}
+                  <div className="p-8 space-y-8 bg-slate-900/50">
+                    <div>
+                      <p className="text-[10px] font-black text-slate-500 uppercase tracking-[0.2em] mb-4">Household Income Profile</p>
+                      <div className="space-y-6">
+                        <div className="p-4 bg-slate-800/40 rounded-xl border border-slate-800 group hover:border-red-900/50 transition-colors">
+                          <p className="text-3xl font-black text-white group-hover:text-red-400 transition-colors">{analysis.wealthMetrics.medianHouseholdIncome}</p>
+                          <p className="text-[10px] text-slate-500 font-mono mt-1 uppercase tracking-widest font-bold">Monthly HH Median</p>
+                        </div>
+                        <div className="p-4 bg-slate-800/40 rounded-xl border border-slate-800 group hover:border-red-900/50 transition-colors">
+                          <p className="text-2xl font-black text-white group-hover:text-red-400 transition-colors">{analysis.wealthMetrics.medianHouseholdIncomePerCapita}</p>
+                          <p className="text-[10px] text-slate-500 font-mono mt-1 uppercase tracking-widest font-bold">Income Per Capita</p>
+                        </div>
+                      </div>
+                    </div>
+                    <div>
+                      <div className="flex justify-between text-[10px] font-black uppercase tracking-widest mb-3">
+                        <span className="text-slate-500">Private Property Mix</span>
+                        <span className="text-red-500">{analysis.wealthMetrics.privatePropertyRatio}</span>
+                      </div>
+                      <div className="w-full h-2 bg-slate-800 rounded-full overflow-hidden shadow-inner">
+                        <div className="h-full bg-gradient-to-r from-red-800 to-red-500" style={{ width: analysis.wealthMetrics.privatePropertyRatio }} />
+                      </div>
+                      <p className="text-[9px] text-slate-600 font-mono mt-3 italic">Ref: {analysis.wealthMetrics.sourceNote || 'Census Benchmarks'}</p>
+                    </div>
+                  </div>
+
+                  {/* Demographics Columns (Consolidated) */}
+                  <div className="p-8 space-y-10 md:col-span-2 grid grid-cols-1 sm:grid-cols-2 gap-10 bg-slate-950/10">
+                    <div className="space-y-8">
+                      <div>
+                        <p className="text-[10px] font-black text-slate-500 uppercase tracking-[0.2em] mb-4 flex items-center gap-2">
+                          <span className="w-1.5 h-1.5 bg-blue-500 rounded-full" /> Age Distribution
+                        </p>
+                        <div className="space-y-4">
+                          {analysis.demographicData.ageDistribution.map((d, i) => (
+                            <DistributionBar key={i} label={d.label} value={d.value} color="bg-blue-600 shadow-[0_0_8px_rgba(37,99,235,0.4)]" />
+                          ))}
+                        </div>
+                      </div>
+                      <div>
+                        <p className="text-[10px] font-black text-slate-500 uppercase tracking-[0.2em] mb-4 flex items-center gap-2">
+                          <span className="w-1.5 h-1.5 bg-green-500 rounded-full" /> Employment Status
+                        </p>
+                        <div className="space-y-4">
+                          {analysis.demographicData.employmentStatus.map((d, i) => (
+                            <DistributionBar key={i} label={d.label} value={d.value} color="bg-emerald-600 shadow-[0_0_8px_rgba(16,185,129,0.4)]" />
+                          ))}
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="space-y-8">
+                      <div>
+                        <p className="text-[10px] font-black text-slate-500 uppercase tracking-[0.2em] mb-4 flex items-center gap-2">
+                          <span className="w-1.5 h-1.5 bg-red-500 rounded-full" /> Race Composition
+                        </p>
+                        <div className="space-y-4">
+                          {analysis.demographicData.raceDistribution.map((d, i) => (
+                            <DistributionBar key={i} label={d.label} value={d.value} color="bg-red-600 shadow-[0_0_8px_rgba(220,38,38,0.4)]" />
+                          ))}
+                        </div>
+                      </div>
+                      <div>
+                        <p className="text-[10px] font-black text-slate-500 uppercase tracking-[0.2em] mb-3">Residential Density</p>
+                        <div className="bg-slate-800/30 p-5 rounded-2xl border border-slate-800/50 flex flex-col justify-center items-center text-center">
+                          <p className="text-3xl font-black text-white mb-1">{analysis.demographicData.residentPopulation}</p>
+                          <p className="text-[10px] text-slate-500 font-mono uppercase tracking-widest font-bold">Total Residents</p>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              {/* 4. Strategic Recommendations - Vertical Investment Dossiers */}
+              <div className="space-y-8 pt-4">
+                <div className="flex items-center justify-between mb-2">
+                  <h3 className="text-xs font-black uppercase tracking-[0.4em] text-slate-400">Strategic Investment Dossiers</h3>
+                  <div className="h-px flex-grow mx-6 bg-slate-200" />
+                </div>
+                
+                {/* Custom Generation Card */}
+                <div className="bg-gradient-to-br from-red-600 to-red-800 rounded-2xl p-6 shadow-lg text-white relative overflow-hidden group">
+                  <div className="absolute top-0 right-0 p-8 opacity-10 group-hover:opacity-20 transition-opacity">
+                    <Icons.Search className="w-32 h-32 text-white" />
+                  </div>
+                  <div className="relative z-10">
+                    <h4 className="text-lg font-bold tracking-tight mb-2">Targeted Opportunity Scan</h4>
+                    <p className="text-red-100 text-xs mb-4 max-w-lg">Don't see your niche? Command the engine to perform a specific feasibility study for any business type.</p>
+                    <div className="flex gap-2 max-w-md">
+                      <input 
+                        type="text" 
+                        value={customPrompt}
+                        onChange={(e) => setCustomPrompt(e.target.value)}
+                        placeholder="e.g. Cat Cafe, Pilates Studio, Hardware Store" 
+                        className="flex-grow px-4 py-2 rounded-lg bg-white/10 border border-white/20 text-white placeholder-red-200/50 text-sm focus:outline-none focus:ring-2 focus:ring-white/50"
+                        onKeyDown={(e) => e.key === 'Enter' && handleGenerateCustom()}
+                      />
+                      <button 
+                        onClick={handleGenerateCustom}
+                        disabled={isGeneratingCustom || !customPrompt.trim()}
+                        className="px-4 py-2 bg-white text-red-700 rounded-lg text-sm font-bold hover:bg-red-50 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                      >
+                        {isGeneratingCustom ? 'Analyzing...' : 'Generate'}
+                      </button>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Filters Toolbar */}
+                <div className="flex flex-col sm:flex-row gap-4 p-4 bg-white rounded-xl border border-slate-200 shadow-sm">
+                  <div className="flex-1 relative flex items-center gap-2">
+                    <span className="text-[10px] font-bold uppercase tracking-widest text-slate-400 px-2">Filter By:</span>
+                    <select 
+                      className="flex-grow px-4 py-2 bg-slate-50 border border-slate-100 rounded-lg text-sm font-bold text-slate-600 focus:ring-2 focus:ring-red-500 focus:outline-none"
+                      value={recFilterCategory}
+                      onChange={(e) => setRecFilterCategory(e.target.value)}
+                    >
+                      <option value="All">All Categories</option>
+                      <option value="F&B">F&B</option>
+                      <option value="Retail">Retail</option>
+                      <option value="Wellness">Wellness</option>
+                      <option value="Education">Education</option>
+                      <option value="Services">Services</option>
+                      <option value="Other">Other</option>
+                    </select>
+                  </div>
+                  <div className="flex gap-4">
+                    <select 
+                      className="px-4 py-2 bg-slate-50 border border-slate-100 rounded-lg text-sm font-bold text-slate-600 focus:ring-2 focus:ring-red-500 focus:outline-none"
+                      value={recFilterScore}
+                      onChange={(e) => setRecFilterScore(e.target.value)}
+                    >
+                      <option value="0">All Scores</option>
+                      <option value="80">Score 80+</option>
+                      <option value="90">Score 90+</option>
+                    </select>
+                    <select 
+                      className="px-4 py-2 bg-slate-50 border border-slate-100 rounded-lg text-sm font-bold text-slate-600 focus:ring-2 focus:ring-red-500 focus:outline-none"
+                      value={recSortBy}
+                      onChange={(e) => setRecSortBy(e.target.value)}
+                    >
+                      <option value="score_desc">Highest Score</option>
+                      <option value="score_asc">Lowest Score</option>
+                      <option value="cost_asc">Lowest Startup Cost</option>
+                      <option value="rev_desc">Highest Revenue</option>
+                    </select>
+                  </div>
+                </div>
+
+                {filteredRecommendations.length > 0 ? (
+                  filteredRecommendations.map((rec, i) => (
+                    <RecommendationCard key={i} rec={rec} isPrime={i === 0 && recSortBy === 'score_desc' && recFilterCategory === 'All'} />
+                  ))
+                ) : (
+                  <div className="py-12 text-center bg-slate-50 rounded-2xl border border-dashed border-slate-200">
+                    <p className="text-sm font-medium text-slate-500 italic">No recommendations match your filters.</p>
+                  </div>
+                )}
+              </div>
+
+              {/* Verification Sources */}
+              <div className="bg-white rounded-2xl shadow-sm border border-slate-200 p-8">
+                <div className="flex flex-col md:flex-row justify-between items-start md:items-center mb-8 gap-4">
+                  <h3 className="text-[10px] font-black uppercase tracking-[0.4em] text-slate-400">Source Grounding Verification</h3>
+                  <div className="px-3 py-1 rounded-full bg-slate-100 text-slate-500 text-[9px] font-bold uppercase tracking-widest flex items-center gap-2">
+                    <div className="w-1.5 h-1.5 bg-green-500 rounded-full animate-pulse" />
+                    Verified Public Registries
+                  </div>
+                </div>
+                
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-8">
+                  
+                  {/* Column 1: Population & Wealth */}
+                  <div className="space-y-4">
+                    <h4 className="text-[9px] font-black uppercase tracking-widest text-slate-900 border-b border-slate-100 pb-2 mb-2 flex items-center gap-2">
+                      Population & Wealth
+                    </h4>
+                    <div className="space-y-2">
+                      {[analysis.wealthMetrics.dataSourceUrl, analysis.demographicData.dataSourceUrl]
+                        .filter((url, index, self) => url && self.indexOf(url) === index) // Unique
+                        .map((url, i) => (
+                        <a key={i} href={url} target="_blank" rel="noopener noreferrer" className="block group">
+                          <div className="p-3 rounded-lg bg-slate-50 border border-slate-100 group-hover:border-red-200 group-hover:bg-red-50/30 transition-all">
+                            <p className="text-[10px] font-bold text-slate-700 truncate mb-1">SingStat / URA Registry</p>
+                            <p className="text-[9px] text-slate-400 font-mono truncate">{getDomain(url || '')}</p>
+                          </div>
+                        </a>
+                      ))}
+                    </div>
+                  </div>
+
+                  {/* Column 2: Opportunity Benchmarks */}
+                  <div className="space-y-4">
+                    <h4 className="text-[9px] font-black uppercase tracking-widest text-slate-900 border-b border-slate-100 pb-2 mb-2">
+                      Opportunity Benchmarks
+                    </h4>
+                    <div className="space-y-2">
+                      {analysis.recommendations.map((rec, i) => rec.dataSourceUrl && (
+                        <a key={i} href={rec.dataSourceUrl} target="_blank" rel="noopener noreferrer" className="block group">
+                          <div className="p-3 rounded-lg bg-slate-50 border border-slate-100 group-hover:border-red-200 group-hover:bg-red-50/30 transition-all flex justify-between items-center gap-2">
+                            <div className="truncate">
+                              <p className="text-[10px] font-bold text-slate-700 truncate mb-1">{rec.businessType}</p>
+                              <p className="text-[9px] text-slate-400 font-mono truncate">{getDomain(rec.dataSourceUrl)}</p>
+                            </div>
+                            <Icons.Search className="w-3 h-3 text-slate-300 group-hover:text-red-400 flex-shrink-0" />
+                          </div>
+                        </a>
+                      ))}
+                    </div>
+                  </div>
+
+                  {/* Column 3: General Context */}
+                  <div className="space-y-4">
+                    <h4 className="text-[9px] font-black uppercase tracking-widest text-slate-900 border-b border-slate-100 pb-2 mb-2">
+                      Deep Web Grounding
+                    </h4>
+                    <div className="space-y-2">
+                      {analysis.sources.slice(0, 5).map((s, idx) => (
+                        <a key={idx} href={s.uri} target="_blank" rel="noopener noreferrer" className="block group">
+                          <div className="p-3 rounded-lg bg-slate-50 border border-slate-100 group-hover:border-red-200 group-hover:bg-red-50/30 transition-all">
+                            <p className="text-[10px] font-bold text-slate-700 truncate mb-1">{s.title}</p>
+                            <p className="text-[9px] text-slate-400 font-mono truncate">{getDomain(s.uri)}</p>
+                          </div>
+                        </a>
+                      ))}
+                    </div>
+                  </div>
+
+                </div>
+              </div>
+            </>
+          )}
+        </div>
+      </main>
+
+      {/* Modals & Popovers */}
+      {selectedLog && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center p-6 bg-slate-900/60 backdrop-blur-sm">
+          <div className="bg-white w-full max-w-2xl rounded-3xl shadow-2xl overflow-hidden flex flex-col max-h-[80vh]">
+            <div className="p-8 border-b border-slate-100 flex justify-between items-center bg-white sticky top-0 z-10">
+              <div>
+                <h2 className="text-2xl font-black text-slate-900 tracking-tighter uppercase">{selectedLog.label}</h2>
+                <p className="text-xs text-slate-500 font-bold uppercase tracking-widest mt-2 flex items-center gap-2">
+                  <span className="w-2 h-2 bg-red-600 rounded-full animate-pulse" /> Audit Trail Indices
+                </p>
+              </div>
+              <button onClick={() => setSelectedLog(null)} className="p-2 hover:bg-slate-100 rounded-full transition-colors text-slate-400">
+                <Icons.Alert className="w-8 h-8 rotate-45" />
+              </button>
+            </div>
+            <div className="p-8 overflow-y-auto space-y-6 bg-slate-50 flex-grow custom-scrollbar">
+              {selectedLog.logs.map((log, i) => (
+                <div key={i} className="p-6 bg-white rounded-3xl border border-slate-100 shadow-sm transition-all hover:border-red-200">
+                  <div className="flex justify-between items-center border-b border-slate-50 pb-3 mb-4">
+                    <span className="text-[10px] font-mono text-red-600 font-black tracking-widest">{log.timestamp}</span>
+                  </div>
+                  <p className="text-sm font-black text-slate-800 mb-3">{log.action}</p>
+                  <div className="p-4 bg-slate-900 rounded-2xl shadow-inner">
+                    <p className="text-[11px] font-mono text-green-400 leading-loose italic">{log.result}</p>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showTimelineModal && analysis && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center p-6 bg-slate-900/80 backdrop-blur-md">
+          <div className="bg-slate-900 w-full max-w-2xl rounded-3xl shadow-2xl overflow-hidden flex flex-col max-h-[85vh] border border-slate-700">
+            <div className="p-8 border-b border-slate-800 flex justify-between items-center sticky top-0 z-10 bg-slate-900">
+              <div>
+                <h2 className="text-2xl font-black text-white uppercase tracking-tighter">Grounding Journal: {analysis.town}</h2>
+                <p className="text-[10px] text-red-500 font-black uppercase tracking-[0.4em] mt-3 flex items-center gap-2">
+                  <span className="w-2 h-2 bg-red-500 rounded-full animate-pulse" />
+                  PERSISTENT MONITORING ACTIVE
+                </p>
+              </div>
+              <button onClick={() => setShowTimelineModal(false)} className="p-2 text-slate-400 hover:text-white transition-colors">
+                 <Icons.Alert className="w-8 h-8 rotate-45" />
+              </button>
+            </div>
+            
+            <div className="p-10 overflow-y-auto flex-grow bg-slate-950 custom-scrollbar-dark">
+              <div className="space-y-10">
+                {analysis.pulseTimeline.map((h, i) => (
+                  <div key={i} className="flex gap-8 relative pb-10 border-l-2 border-slate-800 pl-8 ml-4 last:border-0 last:pb-0">
+                    <div className={`absolute -left-[9px] top-1.5 w-4 h-4 rounded-full ring-8 ring-slate-950 ${h.impact === 'positive' ? 'bg-green-500' : h.impact === 'negative' ? 'bg-red-500' : 'bg-slate-400'}`} />
+                    <div className="flex flex-col gap-2">
+                      <span className="text-[10px] font-mono text-red-600 font-black tracking-widest uppercase">{h.timestamp}</span>
+                      <p className="text-xl text-slate-100 font-black leading-tight tracking-tight">{h.event}</p>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      <footer className="mt-12 py-16 text-center border-t border-slate-200 bg-white">
+        <p className="text-[10px] text-slate-400 font-black uppercase tracking-[0.5em]">Heartland Scout SG • Intelligence Engine v6.0 • SingStat Powered</p>
+      </footer>
+
+      <style>{`
+        .custom-scrollbar::-webkit-scrollbar { width: 4px; }
+        .custom-scrollbar::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 10px; }
+        .custom-scrollbar-dark::-webkit-scrollbar { width: 6px; }
+        .custom-scrollbar-dark::-webkit-scrollbar-track { background: #020617; }
+        .custom-scrollbar-dark::-webkit-scrollbar-thumb { background: #334155; border-radius: 10px; }
+      `}</style>
+    </div>
+  );
+};
+
+const RecommendationCard: React.FC<{ rec: Recommendation; isPrime: boolean }> = ({ rec, isPrime }) => {
+  const [isExpanded, setIsExpanded] = useState(false);
+  const [chartData, setChartData] = useState<any[]>([]);
+
+  useEffect(() => {
+    // Generate 36 months of data
+    const data = [];
+    const upfront = rec.financials.upfrontCost;
+    const monthlyCost = rec.financials.monthlyCost;
+    
+    // Scenarios
+    const scenarios = [
+      { key: 'Bear Case', revenue: rec.financials.monthlyRevenueBad },
+      { key: 'Base Case', revenue: rec.financials.monthlyRevenueAvg },
+      { key: 'Bull Case', revenue: rec.financials.monthlyRevenueGood }
+    ];
+
+    for (let m = 0; m <= 36; m++) {
+      const point: any = { month: m };
+      scenarios.forEach(s => {
+        // Cumulative Cashflow = -Upfront + (Month * (Revenue - Cost))
+        const netProfit = s.revenue - monthlyCost;
+        point[s.key] = -upfront + (m * netProfit);
+      });
+      data.push(point);
+    }
+    setChartData(data);
+  }, [rec]);
+
+  const formatCurrency = (val: number) => 
+    new Intl.NumberFormat('en-SG', { style: 'currency', currency: 'SGD', maximumFractionDigits: 0 }).format(val);
+
+  return (
+    <div className={`bg-white rounded-3xl shadow-sm border ${isPrime ? 'border-red-200 ring-4 ring-red-50/50' : 'border-slate-200'} transition-all duration-300 flex flex-col group relative overflow-hidden ${isExpanded ? 'p-8' : 'p-6 hover:shadow-md'}`}>
+      {isPrime && (
+        <div className="absolute top-0 right-0 bg-red-600 text-white text-[9px] font-black uppercase tracking-widest px-4 py-1.5 rounded-bl-xl shadow-md z-10">
+          Prime Match
+        </div>
+      )}
+      
+      {/* Header - Always Visible - Click to toggle */}
+      <div 
+        className="flex justify-between items-start cursor-pointer"
+        onClick={() => setIsExpanded(!isExpanded)}
+      >
+        <div className="flex gap-4 w-full">
+          <div className={`p-3 h-12 w-12 flex items-center justify-center rounded-2xl border flex-shrink-0 ${isPrime ? 'bg-red-50 border-red-100 text-red-600' : 'bg-slate-50 border-slate-100 text-slate-400'}`}>
+            <Icons.TrendUp className="w-6 h-6" />
+          </div>
+          <div className="flex-grow">
+            <div className="flex flex-col sm:flex-row sm:items-center gap-2 sm:gap-3 mb-1">
+              <h3 className="text-xl sm:text-2xl font-black text-slate-900 tracking-tight">{rec.businessType}</h3>
+              <div className="flex gap-2">
+                <span className={`px-2 py-0.5 rounded-md text-[9px] font-black uppercase tracking-widest ${rec.opportunityScore > 85 ? 'bg-green-100 text-green-700' : 'bg-orange-100 text-orange-700'}`}>
+                  Score: {rec.opportunityScore}
+                </span>
+                <span className="px-2 py-0.5 rounded-md text-[9px] font-black uppercase tracking-widest bg-slate-100 text-slate-600 border border-slate-200">
+                  {rec.category}
+                </span>
+              </div>
+            </div>
+            <p className="text-sm text-slate-500 font-medium leading-relaxed max-w-2xl line-clamp-2 sm:line-clamp-none">{rec.thesis}</p>
+            
+            {/* Collapsed State Preview Metrics */}
+            {!isExpanded && (
+               <div className="flex items-center gap-6 mt-4 opacity-75">
+                  <div>
+                    <p className="text-[9px] font-black uppercase tracking-widest text-slate-400">Est. Setup</p>
+                    <p className="text-xs font-bold text-slate-700">{formatCurrency(rec.financials.upfrontCost)}</p>
+                  </div>
+                  <div>
+                    <p className="text-[9px] font-black uppercase tracking-widest text-slate-400">Target Rev</p>
+                    <p className="text-xs font-bold text-slate-700">{formatCurrency(rec.financials.monthlyRevenueAvg)}/mo</p>
+                  </div>
+                  <div className="flex items-center gap-1 text-red-600 text-[10px] font-black uppercase tracking-widest ml-auto pr-4">
+                    Expand Dossier
+                    <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" /></svg>
+                  </div>
+               </div>
+            )}
+          </div>
+        </div>
+      </div>
+
+      {/* Expanded Content */}
+      <div className={`grid grid-cols-1 lg:grid-cols-12 gap-8 overflow-hidden transition-all duration-500 ease-in-out ${isExpanded ? 'max-h-[2000px] opacity-100 mt-8' : 'max-h-0 opacity-0'}`}>
+        {/* Left Col: Blueprint & Financials */}
+        <div className="lg:col-span-7 space-y-8">
+          {/* Business Blueprint Grid */}
+          <div className="bg-slate-50 rounded-2xl border border-slate-100 p-6">
+            <h4 className="text-[10px] font-black uppercase tracking-widest text-slate-400 mb-4">Operational Blueprint</h4>
+            <div className="grid grid-cols-2 gap-y-6 gap-x-4">
+              <div>
+                <p className="text-[9px] font-bold text-slate-400 uppercase tracking-wide mb-1">Target Audience</p>
+                <p className="text-xs font-bold text-slate-800 leading-snug">{rec.businessProfile.targetAudience}</p>
+              </div>
+              <div>
+                <p className="text-[9px] font-bold text-slate-400 uppercase tracking-wide mb-1">Strategic Approach</p>
+                <p className="text-xs font-bold text-slate-800 leading-snug">{rec.businessProfile.strategy}</p>
+              </div>
+              <div className="flex gap-4">
+                <div>
+                   <p className="text-[9px] font-bold text-slate-400 uppercase tracking-wide mb-1">Scale</p>
+                   <p className="text-xs font-bold text-slate-800">{rec.businessProfile.size}</p>
+                </div>
+                <div>
+                   <p className="text-[9px] font-bold text-slate-400 uppercase tracking-wide mb-1">Staffing</p>
+                   <p className="text-xs font-bold text-slate-800">{rec.businessProfile.employees}</p>
+                </div>
+              </div>
+              <div>
+                <p className="text-[9px] font-bold text-slate-400 uppercase tracking-wide mb-1">Gap Analysis</p>
+                <p className="text-xs font-medium text-slate-600 leading-snug">{rec.gapReason}</p>
+              </div>
+            </div>
+          </div>
+
+          {/* Financial Breakdown */}
+          <div className="grid grid-cols-2 gap-4">
+            <div className="p-5 bg-slate-900 rounded-2xl border border-slate-800 shadow-lg text-white">
+              <p className="text-[9px] font-black uppercase tracking-widest text-slate-500 mb-1">Est. Upfront Investment</p>
+              <p className="text-2xl font-black text-white">{formatCurrency(rec.financials.upfrontCost)}</p>
+              <p className="text-[9px] text-slate-500 mt-2 font-mono">Renovation, Equipment, Licenses</p>
+            </div>
+            <div className="p-5 bg-white rounded-2xl border border-slate-200 shadow-sm">
+              <p className="text-[9px] font-black uppercase tracking-widest text-slate-400 mb-1">Monthly Operating Cost</p>
+              <p className="text-2xl font-black text-slate-900">{formatCurrency(rec.financials.monthlyCost)}</p>
+              <p className="text-[9px] text-slate-400 mt-2 font-mono">Rent ({formatCurrency(rec.estimatedRental)} psf), Wages, Utilities</p>
+            </div>
+          </div>
+        </div>
+
+        {/* Right Col: Break Even Analysis */}
+        <div className="lg:col-span-5 flex flex-col bg-white rounded-2xl border border-slate-200 p-6 shadow-sm">
+          <div className="flex items-center justify-between mb-6">
+            <h4 className="text-[10px] font-black uppercase tracking-widest text-slate-400">Break-Even Horizon (36 Months)</h4>
+            <div className="flex gap-2">
+              <span className="w-2 h-2 rounded-full bg-red-400" />
+              <span className="w-2 h-2 rounded-full bg-slate-400" />
+              <span className="w-2 h-2 rounded-full bg-green-500" />
+            </div>
+          </div>
+          <div className="flex-grow min-h-[200px]">
+            <ResponsiveContainer width="100%" height="100%">
+              <LineChart data={chartData} margin={{ top: 5, right: 5, bottom: 5, left: 0 }}>
+                <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
+                <XAxis 
+                  dataKey="month" 
+                  tick={{fontSize: 10, fill: '#94a3b8'}} 
+                  axisLine={false} 
+                  tickLine={false}
+                  interval={5}
+                />
+                <YAxis 
+                  tickFormatter={(val) => `S$${val/1000}k`} 
+                  tick={{fontSize: 10, fill: '#94a3b8'}} 
+                  axisLine={false} 
+                  tickLine={false}
+                  width={45}
+                />
+                <Tooltip 
+                  contentStyle={{ backgroundColor: '#1e293b', border: 'none', borderRadius: '8px', fontSize: '11px', color: '#fff' }}
+                  itemStyle={{ color: '#fff' }}
+                  formatter={(value: number) => formatCurrency(value)}
+                  labelFormatter={(label) => `Month ${label}`}
+                />
+                <ReferenceLine y={0} stroke="#cbd5e1" strokeDasharray="3 3" />
+                <Line type="monotone" dataKey="Bear Case" stroke="#f87171" strokeWidth={2} dot={false} />
+                <Line type="monotone" dataKey="Base Case" stroke="#94a3b8" strokeWidth={2} dot={false} />
+                <Line type="monotone" dataKey="Bull Case" stroke="#22c55e" strokeWidth={2} dot={false} />
+              </LineChart>
+            </ResponsiveContainer>
+          </div>
+          <div className="mt-4 grid grid-cols-3 gap-2 text-center">
+             <div className="p-2 bg-red-50 rounded-lg">
+                <p className="text-[8px] font-bold text-red-400 uppercase">Bear</p>
+                <p className="text-[10px] font-black text-red-700">{formatCurrency(rec.financials.monthlyRevenueBad)}/mo</p>
+             </div>
+             <div className="p-2 bg-slate-50 rounded-lg">
+                <p className="text-[8px] font-bold text-slate-400 uppercase">Base</p>
+                <p className="text-[10px] font-black text-slate-700">{formatCurrency(rec.financials.monthlyRevenueAvg)}/mo</p>
+             </div>
+             <div className="p-2 bg-green-50 rounded-lg">
+                <p className="text-[8px] font-bold text-green-600 uppercase">Bull</p>
+                <p className="text-[10px] font-black text-green-700">{formatCurrency(rec.financials.monthlyRevenueGood)}/mo</p>
+             </div>
+          </div>
+        </div>
+
+        {/* Footer Info: Sources & Locations */}
+        <div className="col-span-1 lg:col-span-12 mt-2 pt-6 border-t border-slate-100 flex flex-col md:flex-row md:items-center justify-between gap-4">
+            <div className="flex items-center gap-4 overflow-x-auto pb-2 md:pb-0">
+                <span className="text-[9px] font-black text-slate-400 uppercase tracking-widest whitespace-nowrap">Suggested Expansion Clusters:</span>
+                {rec.suggestedLocations.map((loc, j) => (
+                    <span key={j} className="text-[10px] bg-slate-50 text-slate-600 px-3 py-1 rounded-full border border-slate-100 font-bold whitespace-nowrap">
+                    {loc}
+                    </span>
+                ))}
+            </div>
+            <div className="flex items-center gap-6">
+                {rec.dataSourceUrl && (
+                    <a href={rec.dataSourceUrl} target="_blank" rel="noopener noreferrer" className="flex items-center gap-1.5 text-[9px] font-bold text-slate-400 hover:text-red-500 uppercase tracking-widest transition-colors whitespace-nowrap">
+                        Market Reference
+                        <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" /></svg>
+                    </a>
+                )}
+                <button 
+                    onClick={(e) => { e.stopPropagation(); setIsExpanded(false); }}
+                    className="flex items-center gap-1 text-[10px] font-black uppercase tracking-widest text-slate-400 hover:text-red-500 self-start md:self-auto"
+                >
+                    Collapse View
+                    <svg className="w-3 h-3 rotate-180" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" /></svg>
+                </button>
+            </div>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+const DistributionBar: React.FC<{ label: string; value: number; color: string }> = ({ label, value, color }) => (
+  <div className="space-y-1.5">
+    <div className="flex justify-between text-[10px] font-black uppercase tracking-widest">
+      <span className="text-slate-400 truncate pr-4">{label}</span>
+      <span className="text-white tabular-nums">{value}%</span>
+    </div>
+    <div className="w-full h-1.5 bg-slate-800 rounded-full overflow-hidden shadow-inner">
+      <div className={`h-full ${color} transition-all duration-1000 ease-out`} style={{ width: `${value}%` }} />
+    </div>
+  </div>
+);
+
+const LoopItem: React.FC<{ 
+  label: string; 
+  active: boolean; 
+  done: boolean; 
+  category?: DiscoveryCategory;
+  onOpenModal: (cat: DiscoveryCategory) => void;
+}> = ({ label, active, done, category, onOpenModal }) => (
+  <div className="flex flex-col gap-1.5">
+    <div className="flex items-center justify-between">
+      <span className={`text-[9px] font-bold uppercase tracking-widest ${active ? 'text-red-600 animate-pulse' : done ? 'text-slate-800' : 'text-slate-300'}`}>
+        {label}
+      </span>
+      {active ? (
+        <div className="w-3 h-3 border-2 border-red-200 border-t-red-600 rounded-full animate-spin" />
+      ) : done ? (
+        <div className="bg-green-100 p-0.5 rounded-full ring-1 ring-green-50 shadow-sm">
+          <svg className="w-2.5 h-2.5 text-green-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={5} d="M5 13l4 4L19 7" />
+          </svg>
+        </div>
+      ) : (
+        <div className="w-1.5 h-1.5 bg-slate-100 rounded-full" />
+      )}
+    </div>
+    {done && category && (
+      <div onClick={() => onOpenModal(category)} className="p-3 bg-slate-50 border border-slate-100 rounded-xl cursor-pointer hover:border-red-100 hover:bg-red-50/20 transition-all group overflow-hidden shadow-sm">
+        <div className="space-y-2">
+          {category.logs.slice(0, 1).map((log, i) => (
+            <div key={i} className="flex flex-col border-l border-red-200 pl-2">
+              <span className="text-[7px] font-mono text-slate-400 block mb-0.5 uppercase tracking-tighter">{log.timestamp}</span>
+              <p className="text-[9px] text-slate-700 font-bold leading-tight line-clamp-1 group-hover:text-red-600 transition-colors">{log.action}</p>
+            </div>
+          ))}
+          {category.logs.length > 1 && (
+            <p className="text-[8px] font-bold text-slate-400 uppercase tracking-widest text-center mt-1 group-hover:text-red-600 transition-colors">
+              +{category.logs.length - 1} Events
+            </p>
+          )}
+        </div>
+      </div>
+    )}
+  </div>
+);
+
+export default App;
