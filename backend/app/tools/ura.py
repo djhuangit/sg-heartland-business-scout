@@ -1,6 +1,7 @@
 from datetime import datetime, timezone
 
 import httpx
+from loguru import logger
 from langchain_core.tools import tool
 
 
@@ -8,6 +9,7 @@ from langchain_core.tools import tool
 def fetch_ura_rental(town: str) -> dict:
     """Fetch URA rental transaction data for a given planning area.
     Attempts to access URA's property market information."""
+    logger.debug("[tool:ura_rental] town={}", town)
     result = {
         "fetch_status": "UNAVAILABLE",
         "source_id": "ura_rental",
@@ -38,4 +40,5 @@ def fetch_ura_rental(town: str) -> dict:
         result["error"] = f"http_{e.response.status_code}"
     except Exception as e:
         result["error"] = str(e)
+    logger.info("[tool:ura_rental] {} — {}", result["fetch_status"], town)
     return result

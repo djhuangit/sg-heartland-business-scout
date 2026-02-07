@@ -1,5 +1,6 @@
 from datetime import datetime, timezone
 
+from loguru import logger
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.messages import SystemMessage, HumanMessage
 
@@ -30,6 +31,7 @@ def market_intel_agent(state: ScoutState) -> dict:
     """Analyze business mix, saturation, and foot traffic for the town."""
     town = state["town"]
     now = datetime.now(timezone.utc).isoformat()
+    logger.info("[market_intel] Starting for {}", town)
 
     tool_results = []
 
@@ -38,18 +40,21 @@ def market_intel_agent(state: ScoutState) -> dict:
         {"query": f"{town} Singapore HDB shops business directory F&B retail 2025"}
     )
     tool_results.append(biz_result)
+    logger.info("[market_intel] web_search (biz_mix): {}", biz_result["fetch_status"])
 
     # Search for foot traffic / transport
     traffic_result = search_web.invoke(
         {"query": f"{town} Singapore MRT station bus interchange foot traffic daily ridership"}
     )
     tool_results.append(traffic_result)
+    logger.info("[market_intel] web_search (traffic): {}", traffic_result["fetch_status"])
 
     # Search for saturation / competition
     sat_result = search_web.invoke(
         {"query": f"{town} Singapore new shop openings commercial vacancy rate 2025 2026"}
     )
     tool_results.append(sat_result)
+    logger.info("[market_intel] web_search (saturation): {}", sat_result["fetch_status"])
 
     llm = ChatGoogleGenerativeAI(
         model="gemini-2.0-flash",
@@ -75,6 +80,8 @@ Return a JSON object with businessMix, saturationAnalysis, footTrafficEstimate, 
 If tools failed, note failures in discoveryLogs.
 """),
     ])
+    logger.info("[market_intel] LLM response: {} chars", len(response.content))
+    logger.success("[market_intel] Complete for {}", town)
 
     return {
         "market_intel_raw": [{

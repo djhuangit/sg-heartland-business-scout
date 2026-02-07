@@ -1,6 +1,7 @@
 from datetime import datetime, timezone
 
 import httpx
+from loguru import logger
 from langchain_core.tools import tool
 
 HDB_TENDERS_URL = "https://services2.hdb.gov.sg/webapp/AA16SalesflatWeb/AA16SERPListPage"
@@ -10,6 +11,7 @@ HDB_TENDERS_URL = "https://services2.hdb.gov.sg/webapp/AA16SalesflatWeb/AA16SERP
 def fetch_hdb_tenders(town: str) -> dict:
     """Fetch active HDB commercial property tenders for a given town.
     Attempts to access HDB's commercial tenders listing."""
+    logger.debug("[tool:hdb_tenders] town={}", town)
     result = {
         "fetch_status": "UNAVAILABLE",
         "source_id": "hdb_tenders",
@@ -40,4 +42,5 @@ def fetch_hdb_tenders(town: str) -> dict:
         result["error"] = f"http_{e.response.status_code}"
     except Exception as e:
         result["error"] = str(e)
+    logger.info("[tool:hdb_tenders] {} — {}", result["fetch_status"], town)
     return result

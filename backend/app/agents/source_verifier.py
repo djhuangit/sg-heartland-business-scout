@@ -1,5 +1,7 @@
 from datetime import datetime, timezone
 
+from loguru import logger
+
 from app.models.state import ScoutState
 
 
@@ -12,6 +14,7 @@ def source_verifier(state: ScoutState) -> dict:
     """
     tool_calls = state.get("tool_calls", [])
     now = datetime.now(timezone.utc).isoformat()
+    logger.info("[verifier] Starting — {} tool calls to verify", len(tool_calls))
 
     failed_tools = []
     verified_tools = []
@@ -66,6 +69,9 @@ def source_verifier(state: ScoutState) -> dict:
         # If any source in a category failed, mark the category accordingly
         if fetch_status == "UNAVAILABLE":
             verification_report["categories"][cat]["status"] = "UNAVAILABLE"
+
+    logger.info("[verifier] {} tool calls — {} verified, {} failed",
+        len(tool_calls), verification_report["verified_count"], verification_report["failed_count"])
 
     return {
         "verification_report": verification_report,

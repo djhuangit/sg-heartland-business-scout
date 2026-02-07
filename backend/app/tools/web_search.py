@@ -1,6 +1,7 @@
 from datetime import datetime, timezone
 
 import httpx
+from loguru import logger
 from langchain_core.tools import tool
 
 
@@ -17,6 +18,7 @@ def search_web(query: str) -> dict:
         "fetched_at": None,
         "query": query,
     }
+    logger.debug("[tool:web_search] query={}", query[:80])
     try:
         # Use a search-oriented approach: fetch Google search results page
         # In production, replace with Tavily/SerpAPI/Google Custom Search
@@ -41,4 +43,5 @@ def search_web(query: str) -> dict:
         result["error"] = f"http_{e.response.status_code}"
     except Exception as e:
         result["error"] = str(e)
+    logger.info("[tool:web_search] {} — {}", result["fetch_status"], query[:50])
     return result

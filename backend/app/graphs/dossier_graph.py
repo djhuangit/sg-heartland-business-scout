@@ -1,6 +1,7 @@
 import json
 from datetime import datetime, timezone
 
+from loguru import logger
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.messages import SystemMessage, HumanMessage
 
@@ -40,6 +41,7 @@ No markdown fences. ONLY valid JSON.
 
 async def generate_dossier(town: str, business_type: str, analysis: dict) -> dict:
     """Generate a custom dossier for a specific business type."""
+    logger.info("[dossier] Generating for '{}' in {}", business_type, town)
     wealth = analysis.get("wealthMetrics", {})
     demo = analysis.get("demographicData", {})
 
@@ -75,8 +77,12 @@ async def generate_dossier(town: str, business_type: str, analysis: dict) -> dic
             raw_text = raw_text.split("```json")[1].split("```")[0]
         elif "```" in raw_text:
             raw_text = raw_text.split("```")[1].split("```")[0]
-        return json.loads(raw_text.strip())
+        dossier = json.loads(raw_text.strip())
+        logger.success("[dossier] Complete for '{}' in {} — score {}",
+            business_type, town, dossier.get("opportunityScore", "?"))
+        return dossier
     except (json.JSONDecodeError, IndexError):
+        logger.warning("[dossier] JSON parse failed for '{}' in {}", business_type, town)
         return {
             "businessType": business_type,
             "category": "Other",

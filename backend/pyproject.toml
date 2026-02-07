@@ -12,6 +12,7 @@ dependencies = [
     "langchain-core>=1.2.9",
     "langchain-google-genai>=4.2.0",
     "langgraph>=1.0.8",
+    "loguru>=0.7.3",
     "psycopg2-binary>=2.9.11",
     "pydantic>=2.12.5",
     "pydantic-settings>=2.12.0",

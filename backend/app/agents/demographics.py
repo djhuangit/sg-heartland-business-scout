@@ -1,5 +1,6 @@
 from datetime import datetime, timezone
 
+from loguru import logger
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.messages import SystemMessage, HumanMessage
 
@@ -34,20 +35,24 @@ def demographics_agent(state: ScoutState) -> dict:
     """Fetch and interpret demographics & wealth data for the town."""
     town = state["town"]
     now = datetime.now(timezone.utc).isoformat()
+    logger.info("[demographics] Starting for {}", town)
 
     # Step 1: Fetch data using tools
     tool_results = []
 
     demo_result = fetch_singstat_demographics.invoke({"town": town})
     tool_results.append(demo_result)
+    logger.info("[demographics] singstat_demographics: {}", demo_result["fetch_status"])
 
     income_result = fetch_singstat_income.invoke({"town": town})
     tool_results.append(income_result)
+    logger.info("[demographics] singstat_income: {}", income_result["fetch_status"])
 
     web_result = search_web.invoke(
         {"query": f"{town} Singapore HDB planning area demographics population income 2024 2025"}
     )
     tool_results.append(web_result)
+    logger.info("[demographics] web_search: {}", web_result["fetch_status"])
 
     # Step 2: Use LLM to interpret the tool results
     llm = ChatGoogleGenerativeAI(
@@ -74,6 +79,8 @@ Return a JSON object with wealthMetrics, demographicData, and discoveryLogs.
 If a tool failed, mark that section's data as best-effort from available tools and note the failure in discoveryLogs.
 """),
     ])
+    logger.info("[demographics] LLM response: {} chars", len(response.content))
+    logger.success("[demographics] Complete for {}", town)
 
     # Build discovery logs
     logs = []

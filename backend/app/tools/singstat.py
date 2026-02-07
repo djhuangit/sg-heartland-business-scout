@@ -1,6 +1,7 @@
 from datetime import datetime, timezone
 
 import httpx
+from loguru import logger
 from langchain_core.tools import tool
 
 SINGSTAT_URL = "https://www.singstat.gov.sg/find-data/search-by-theme/population/geographic-distribution/latest-data"
@@ -11,6 +12,7 @@ SINGSTAT_TABLE_URL = "https://tablebuilder.singstat.gov.sg/api/table/tabledata"
 def fetch_singstat_demographics(town: str) -> dict:
     """Fetch demographic data for a Singapore planning area from SingStat.
     Attempts to access SingStat Table Builder API for census data."""
+    logger.debug("[tool:singstat_census] town={}", town)
     result = {
         "fetch_status": "UNAVAILABLE",
         "source_id": "singstat_census",
@@ -45,12 +47,14 @@ def fetch_singstat_demographics(town: str) -> dict:
         result["error"] = f"http_{e.response.status_code}"
     except Exception as e:
         result["error"] = str(e)
+    logger.info("[tool:singstat_census] {} — {}", result["fetch_status"], town)
     return result
 
 
 @tool
 def fetch_singstat_income(town: str) -> dict:
     """Fetch household income data for a Singapore planning area from SingStat."""
+    logger.debug("[tool:singstat_income] town={}", town)
     result = {
         "fetch_status": "UNAVAILABLE",
         "source_id": "singstat_income",
@@ -83,4 +87,5 @@ def fetch_singstat_income(town: str) -> dict:
         result["error"] = f"http_{e.response.status_code}"
     except Exception as e:
         result["error"] = str(e)
+    logger.info("[tool:singstat_income] {} — {}", result["fetch_status"], town)
     return result

@@ -1,5 +1,7 @@
 from datetime import datetime, timezone
 
+from loguru import logger
+
 from app.models.state import MarathonState
 
 
@@ -17,6 +19,7 @@ def marathon_observer(state: MarathonState) -> dict:
     now = datetime.now(timezone.utc)
 
     if not kb:
+        logger.info("[observer] {} — scope=full, reason=cold_start", state.get("town", "?"))
         return {
             "research_directive": {
                 "scope": "full",
@@ -62,6 +65,7 @@ def marathon_observer(state: MarathonState) -> dict:
         reasons.append(f"watch_items: {len(watch_items)} active")
 
     scope = "full" if len(categories) >= 3 else "partial"
+    logger.info("[observer] {} — scope={}, categories={}", state.get("town", "?"), scope, categories)
 
     return {
         "research_directive": {

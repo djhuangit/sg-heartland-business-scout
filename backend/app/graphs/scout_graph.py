@@ -1,3 +1,4 @@
+from loguru import logger
 from langgraph.graph import StateGraph, START, END
 from app.models.state import ScoutState
 from app.agents.demographics import demographics_agent
@@ -34,6 +35,7 @@ def build_scout_graph() -> StateGraph:
 
     builder.add_edge("source_verifier", END)
 
+    logger.debug("[scout_graph] Compiled with fan-out/fan-in topology")
     return builder.compile()
 
 

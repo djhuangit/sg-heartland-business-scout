@@ -1,5 +1,6 @@
 from datetime import datetime, timezone
 
+from loguru import logger
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.messages import SystemMessage, HumanMessage
 
@@ -36,19 +37,23 @@ def commercial_agent(state: ScoutState) -> dict:
     """Fetch HDB tenders and URA rental data for the town."""
     town = state["town"]
     now = datetime.now(timezone.utc).isoformat()
+    logger.info("[commercial] Starting for {}", town)
 
     tool_results = []
 
     hdb_result = fetch_hdb_tenders.invoke({"town": town})
     tool_results.append(hdb_result)
+    logger.info("[commercial] hdb_tenders: {}", hdb_result["fetch_status"])
 
     ura_result = fetch_ura_rental.invoke({"town": town})
     tool_results.append(ura_result)
+    logger.info("[commercial] ura_rental: {}", ura_result["fetch_status"])
 
     web_result = search_web.invoke(
         {"query": f"{town} Singapore HDB commercial tender 2025 2026 rental psf"}
     )
     tool_results.append(web_result)
+    logger.info("[commercial] web_search: {}", web_result["fetch_status"])
 
     llm = ChatGoogleGenerativeAI(
         model="gemini-2.0-flash",
@@ -74,6 +79,8 @@ Return a JSON object with activeTenders, rentalData, and discoveryLogs.
 If tools failed, note failures in discoveryLogs and mark data accordingly.
 """),
     ])
+    logger.info("[commercial] LLM response: {} chars", len(response.content))
+    logger.success("[commercial] Complete for {}", town)
 
     return {
         "commercial_raw": [{

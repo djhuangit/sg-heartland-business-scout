@@ -1,6 +1,8 @@
 from datetime import datetime, timezone
 import json
 
+from loguru import logger
+
 from app.models.state import MarathonState
 
 
@@ -85,5 +87,10 @@ def delta_detector(state: MarathonState) -> dict:
             "significance": "NOISE",
             "trend_direction": "STABLE",
         })
+
+    high = sum(1 for d in deltas if d.get("significance") == "HIGH")
+    med = sum(1 for d in deltas if d.get("significance") == "MEDIUM")
+    low = sum(1 for d in deltas if d.get("significance") == "LOW")
+    logger.info("[delta] {} deltas detected (HIGH={}, MEDIUM={}, LOW={})", len(deltas), high, med, low)
 
     return {"deltas": deltas}

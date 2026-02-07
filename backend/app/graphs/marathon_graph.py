@@ -1,3 +1,4 @@
+from loguru import logger
 from langgraph.graph import StateGraph, START, END
 
 from app.models.state import MarathonState
@@ -39,6 +40,9 @@ def _scout_pipeline(state: MarathonState) -> dict:
 def persist_to_db(state: MarathonState) -> dict:
     """Persist the updated knowledge base.
     For now, just passes through — DB persistence added in Phase 6."""
+    kb = state.get("updated_knowledge_base", {})
+    logger.success("[persist] KB saved for {} — run #{}",
+        kb.get("town", "?"), kb.get("total_runs", 0))
     return {
         "run_summary": state.get("run_summary", "Run complete."),
     }

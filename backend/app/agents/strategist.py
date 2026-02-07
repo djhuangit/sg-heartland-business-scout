@@ -1,6 +1,7 @@
 import json
 from datetime import datetime, timezone
 
+from loguru import logger
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.messages import SystemMessage, HumanMessage
 
@@ -45,6 +46,7 @@ def strategist(state: MarathonState) -> dict:
     now = datetime.now(timezone.utc).isoformat()
 
     high_deltas = [d for d in deltas if d.get("significance") == "HIGH"]
+    logger.info("[strategist] Re-evaluating due to {} HIGH changes", len(high_deltas))
 
     llm = ChatGoogleGenerativeAI(
         model="gemini-2.0-flash",
@@ -90,6 +92,7 @@ Please provide updated recommendations reflecting these changes."""
         "impact": "positive",
     })
     analysis["pulseTimeline"] = timeline[:100]
+    logger.success("[strategist] Updated {} recommendations", len(analysis.get("recommendations", [])))
 
     return {
         "analysis": analysis,

@@ -1,6 +1,7 @@
 import json
 from datetime import datetime, timezone
 
+from loguru import logger
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.messages import SystemMessage, HumanMessage
 
@@ -68,6 +69,8 @@ def knowledge_integrator(state: MarathonState) -> dict:
     town = state["town"]
     kb = state.get("knowledge_base")
     now = datetime.now(timezone.utc).isoformat()
+    total_runs = (kb.get("total_runs", 0) if kb else 0) + 1
+    logger.info("[integrator] Merging for {} — run #{}", town, total_runs)
 
     # Collect all raw agent outputs
     demographics = state.get("demographics_raw", [])
@@ -169,6 +172,10 @@ def knowledge_integrator(state: MarathonState) -> dict:
         "business_mix_history": kb.get("business_mix_history", []) if kb else [],
         "recommendation_history": kb.get("recommendation_history", []) if kb else [],
     }
+
+    logger.info("[integrator] Analysis: {} chars, {} recommendations",
+        len(str(analysis)), len(analysis.get("recommendations", [])))
+    logger.success("[integrator] KB merged for {} — run #{}", town, updated_kb["total_runs"])
 
     return {
         "updated_knowledge_base": updated_kb,

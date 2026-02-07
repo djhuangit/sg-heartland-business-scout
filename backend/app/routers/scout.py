@@ -1,21 +1,21 @@
 import asyncio
 import json
-import logging
+import time
+import uuid
 from datetime import datetime, timezone
 
+from loguru import logger
 from fastapi import APIRouter, HTTPException, Query
 from sse_starlette.sse import EventSourceResponse
 
 from app.graphs.marathon_graph import marathon_graph
 from app.graphs.dossier_graph import generate_dossier
 
-logger = logging.getLogger(__name__)
-
 router = APIRouter()
 
 # In-memory store for knowledge bases (will move to Postgres when Docker is available)
 _knowledge_bases: dict[str, dict] = {}
-_active_runs: dict[str, dict] = {}
+_run_history: list[dict] = []  # Append-only list of all runs
 
 HDB_TOWNS = [
     'Ang Mo Kio', 'Bedok', 'Bishan', 'Bukit Batok', 'Bukit Merah',
@@ -45,10 +45,17 @@ async def stream_scout(town: str):
         raise HTTPException(status_code=404, detail=f"Unknown town: {town}")
 
     async def event_generator():
+        run_id = str(uuid.uuid4())
+        started_at = datetime.now(timezone.utc).isoformat()
+        start_time = time.monotonic()
+
         try:
-            yield {"event": "message", "data": _emit_event("run_started", "marathon", {"town": town})}
+            logger.info("Scout stream started for {} (run {})", town, run_id[:8])
+            yield {"event": "message", "data": _emit_event("run_started", "marathon", {"town": town, "run_id": run_id})}
 
             kb = _knowledge_bases.get(town)
+            directive = "cold_start" if not kb else "incremental"
+            logger.info("Marathon observer: {}", directive)
 
             # Step 1: Marathon Observer
             yield {"event": "message", "data": _emit_event("node_started", "marathon_observer")}
@@ -83,10 +90,13 @@ async def stream_scout(town: str):
             yield {"event": "message", "data": _emit_event("node_started", "market_intel_agent")}
 
             # Run the full pipeline
+            logger.info("Pipeline running for {} ...", town)
             result = await asyncio.to_thread(marathon_graph.invoke, initial_state)
 
             # Emit tool results from the verification report
             tool_calls = result.get("tool_calls", [])
+            deltas = result.get("deltas", [])
+            logger.info("Pipeline complete — {} tool calls, {} deltas", len(tool_calls), len(deltas))
             for tc in tool_calls:
                 source = tc.get("source_id", "unknown")
                 status = tc.get("fetch_status", "UNAVAILABLE")
@@ -160,16 +170,60 @@ async def stream_scout(town: str):
                 _knowledge_bases[town] = updated_kb
             yield {"event": "message", "data": _emit_event("node_completed", "persist")}
 
+            # Record run history
+            completed_at = datetime.now(timezone.utc).isoformat()
+            duration_ms = int((time.monotonic() - start_time) * 1000)
+            run_record = {
+                "run_id": run_id,
+                "town": town,
+                "started_at": started_at,
+                "completed_at": completed_at,
+                "status": "completed",
+                "run_number": updated_kb.get("total_runs", 0) if updated_kb else 0,
+                "run_summary": result.get("run_summary", ""),
+                "directive": directive,
+                "tool_calls": result.get("tool_calls", []),
+                "verification_report": result.get("verification_report", {}),
+                "fetch_failures": result.get("fetch_failures", []),
+                "deltas": result.get("deltas", []),
+                "analysis": updated_kb.get("current_analysis", {}) if updated_kb else {},
+                "duration_ms": duration_ms,
+            }
+            _run_history.append(run_record)
+            logger.success("Run {} persisted — {}ms", run_id[:8], duration_ms)
+
             # Final
             yield {"event": "message", "data": _emit_event("run_completed", "marathon", {
                 "run_summary": result.get("run_summary", ""),
                 "town": town,
+                "run_id": run_id,
+                "duration_ms": duration_ms,
             })}
 
         except Exception as e:
-            logger.exception(f"Marathon failed for {town}")
+            logger.exception("Scout stream failed for {}", town)
+            completed_at = datetime.now(timezone.utc).isoformat()
+            duration_ms = int((time.monotonic() - start_time) * 1000)
+            _run_history.append({
+                "run_id": run_id,
+                "town": town,
+                "started_at": started_at,
+                "completed_at": completed_at,
+                "status": "failed",
+                "run_number": 0,
+                "run_summary": "",
+                "directive": directive,
+                "tool_calls": [],
+                "verification_report": {},
+                "fetch_failures": [],
+                "deltas": [],
+                "analysis": {},
+                "duration_ms": duration_ms,
+                "error": str(e),
+            })
             yield {"event": "message", "data": _emit_event("run_failed", "marathon", {
                 "error": str(e),
+                "run_id": run_id,
             })}
 
     return EventSourceResponse(event_generator())
@@ -213,6 +267,42 @@ async def create_dossier(town: str, business_type: str = Query(...)):
     return recommendation
 
 
+@router.get("/runs")
+async def list_runs(town: str = Query(None), limit: int = Query(50)):
+    """List past pipeline runs, newest first."""
+    runs = _run_history
+    if town:
+        runs = [r for r in runs if r["town"] == town]
+    summaries = [
+        {
+            "run_id": r["run_id"],
+            "town": r["town"],
+            "started_at": r["started_at"],
+            "completed_at": r["completed_at"],
+            "status": r["status"],
+            "run_number": r.get("run_number", 0),
+            "run_summary": r.get("run_summary", ""),
+            "directive": r.get("directive", ""),
+            "duration_ms": r.get("duration_ms", 0),
+            "tool_call_count": len(r.get("tool_calls", [])),
+            "delta_count": len(r.get("deltas", [])),
+            "verified_count": r.get("verification_report", {}).get("verified_count", 0),
+            "failed_count": r.get("verification_report", {}).get("failed_count", 0),
+        }
+        for r in reversed(runs)
+    ][:limit]
+    return {"runs": summaries, "total": len(runs)}
+
+
+@router.get("/runs/{run_id}")
+async def get_run(run_id: str):
+    """Get full details for a specific run."""
+    for r in _run_history:
+        if r["run_id"] == run_id:
+            return r
+    raise HTTPException(status_code=404, detail=f"Run {run_id} not found")
+
+
 @router.get("/towns")
 async def list_towns():
     """List all available HDB towns and their analysis status."""
@@ -221,8 +311,11 @@ async def list_towns():
             {
                 "name": t,
                 "has_analysis": t in _knowledge_bases,
-                "total_runs": _knowledge_bases.get(t, {}).get("total_runs", 0),
-                "last_run_at": _knowledge_bases.get(t, {}).get("last_run_at"),
+                "total_runs": len([r for r in _run_history if r["town"] == t]),
+                "last_run_at": next(
+                    (r["completed_at"] for r in reversed(_run_history) if r["town"] == t),
+                    None,
+                ),
             }
             for t in HDB_TOWNS
         ]
