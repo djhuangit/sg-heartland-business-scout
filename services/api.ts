@@ -1,5 +1,5 @@
 
-import { AreaAnalysis, Recommendation } from '../types';
+import { AreaAnalysis, Recommendation, RunSummary, RunDetail } from '../types';
 
 const API_BASE = 'http://localhost:8000/api';
 
@@ -28,4 +28,18 @@ export const generateSpecificDossier = async (
 
 export const createScoutStream = (town: string): EventSource => {
   return new EventSource(`${API_BASE}/scout/${town}/stream`);
+};
+
+export const fetchRunHistory = async (town?: string, limit: number = 50): Promise<{ runs: RunSummary[]; total: number }> => {
+  const params = new URLSearchParams();
+  if (town) params.set('town', town);
+  params.set('limit', String(limit));
+  const res = await fetch(`${API_BASE}/runs?${params}`);
+  return res.json();
+};
+
+export const fetchRunDetail = async (runId: string): Promise<RunDetail> => {
+  const res = await fetch(`${API_BASE}/runs/${runId}`);
+  if (!res.ok) throw new Error(`Run ${runId} not found`);
+  return res.json();
 };

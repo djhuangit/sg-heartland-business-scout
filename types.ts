@@ -110,6 +110,42 @@ export interface AreaAnalysis {
   lastScannedAt: string;
 }
 
+// --- Run History Types ---
+
+export interface RunSummary {
+  run_id: string;
+  town: string;
+  started_at: string;
+  completed_at: string;
+  status: 'completed' | 'failed';
+  run_number: number;
+  run_summary: string;
+  directive: string;
+  duration_ms: number;
+  tool_call_count: number;
+  delta_count: number;
+  verified_count: number;
+  failed_count: number;
+}
+
+export interface RunDetail {
+  run_id: string;
+  town: string;
+  started_at: string;
+  completed_at: string;
+  status: 'completed' | 'failed';
+  run_number: number;
+  run_summary: string;
+  directive: string;
+  duration_ms: number;
+  tool_calls: Array<{ source_id: string; fetch_status: string; error?: string; raw_url?: string }>;
+  verification_report: Record<string, any>;
+  fetch_failures: Array<{ source_id: string; error: string }>;
+  deltas: Array<{ category: string; change: string; significance: string; trend_direction: string }>;
+  analysis: Record<string, any>;
+  error?: string;
+}
+
 // --- Workflow Visualizer Types (SSE from backend) ---
 
 export interface WorkflowEvent {

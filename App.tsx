@@ -1,7 +1,7 @@
 
 import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
-import { fetchAnalysis, generateSpecificDossier, createScoutStream } from './services/api';
-import { ScoutStatus, AreaAnalysis, DiscoveryCategory, DataPoint, Recommendation, WorkflowEvent, WorkflowNode, WorkflowRun } from './types';
+import { fetchAnalysis, generateSpecificDossier, createScoutStream, fetchRunHistory, fetchRunDetail } from './services/api';
+import { ScoutStatus, AreaAnalysis, DiscoveryCategory, DataPoint, Recommendation, WorkflowEvent, WorkflowNode, WorkflowRun, RunSummary, RunDetail } from './types';
 import { HDB_TOWNS, Icons } from './constants';
 import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, LineChart, Line, ReferenceLine, Legend } from 'recharts';
 
@@ -50,6 +50,11 @@ const App: React.FC = () => {
   const [customPrompt, setCustomPrompt] = useState("");
   const [isGeneratingCustom, setIsGeneratingCustom] = useState(false);
 
+  // Run History State
+  const [runHistory, setRunHistory] = useState<RunSummary[]>([]);
+  const [selectedRunDetail, setSelectedRunDetail] = useState<RunDetail | null>(null);
+  const [isLoadingRunDetail, setIsLoadingRunDetail] = useState(false);
+
   // Load analysis from backend on town change, fallback to localStorage
   useEffect(() => {
     let cancelled = false;
@@ -81,6 +86,23 @@ const App: React.FC = () => {
       localStorage.setItem(STORAGE_KEY_PREFIX + analysis.town, JSON.stringify(analysis));
     }
   }, [analysis]);
+
+  // Fetch run history when town changes or after a scan completes
+  useEffect(() => {
+    fetchRunHistory(town).then(data => setRunHistory(data.runs)).catch(() => setRunHistory([]));
+  }, [town, status]);
+
+  const handleViewRunDetail = async (runId: string) => {
+    setIsLoadingRunDetail(true);
+    try {
+      const detail = await fetchRunDetail(runId);
+      setSelectedRunDetail(detail);
+    } catch {
+      alert('Failed to load run details');
+    } finally {
+      setIsLoadingRunDetail(false);
+    }
+  };
 
   const updateNodeStatus = useCallback((nodeId: string, newStatus: WorkflowNode['status'], summary?: string) => {
     setWorkflowRun(prev => {
@@ -425,8 +447,59 @@ const App: React.FC = () => {
             </>
           )}
 
+          {/* Run History */}
+          <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-5">
+            <div className="flex justify-between items-center mb-4">
+              <h3 className="font-black text-slate-900 flex items-center gap-2 uppercase tracking-[0.2em] text-[10px]">
+                <Icons.TrendUp className="w-3 h-3 text-red-600" />
+                Run History
+              </h3>
+              {runHistory.length > 0 && (
+                <span className="text-[9px] font-mono text-slate-400">{runHistory.length} runs</span>
+              )}
+            </div>
+            <div className="space-y-2 overflow-y-auto max-h-[280px] pr-1 custom-scrollbar">
+              {runHistory.length > 0 ? (
+                runHistory.map((run) => (
+                  <div
+                    key={run.run_id}
+                    onClick={() => handleViewRunDetail(run.run_id)}
+                    className="p-3 bg-slate-50 rounded-xl border border-slate-100 cursor-pointer hover:border-red-200 hover:bg-red-50/20 transition-all group"
+                  >
+                    <div className="flex justify-between items-start mb-1.5">
+                      <div className="flex items-center gap-1.5">
+                        <span className={`w-1.5 h-1.5 rounded-full ${run.status === 'completed' ? 'bg-green-500' : 'bg-red-500'}`} />
+                        <span className="text-[10px] font-bold text-slate-700 group-hover:text-red-600 transition-colors">
+                          Run #{run.run_number}
+                        </span>
+                      </div>
+                      <span className={`text-[7px] px-1.5 py-0.5 rounded-full font-black uppercase ${
+                        run.directive === 'cold_start' ? 'bg-blue-100 text-blue-600' : 'bg-slate-100 text-slate-500'
+                      }`}>
+                        {run.directive === 'cold_start' ? 'Cold Start' : 'Incremental'}
+                      </span>
+                    </div>
+                    <p className="text-[9px] font-mono text-slate-400 mb-1.5">
+                      {new Date(run.started_at).toLocaleString()}
+                    </p>
+                    <div className="flex items-center gap-3 text-[8px] font-bold text-slate-400 uppercase tracking-wider">
+                      <span>{(run.duration_ms / 1000).toFixed(1)}s</span>
+                      <span className="text-green-600">{run.verified_count} verified</span>
+                      {run.failed_count > 0 && <span className="text-red-500">{run.failed_count} failed</span>}
+                      <span>{run.delta_count} deltas</span>
+                    </div>
+                  </div>
+                ))
+              ) : (
+                <div className="py-8 text-center bg-slate-50 rounded-xl border border-dashed border-slate-200">
+                  <p className="text-[9px] text-slate-400 font-bold uppercase tracking-widest px-4 italic">No runs yet. Click "Identify Gaps" to start.</p>
+                </div>
+              )}
+            </div>
+          </div>
+
           {/* Pulse Timeline */}
-          <div 
+          <div
             onClick={() => analysis && setShowTimelineModal(true)}
             className={`bg-slate-900 rounded-xl shadow-lg p-6 text-white overflow-hidden relative h-[400px] flex flex-col ${analysis ? 'cursor-pointer hover:ring-2 hover:ring-red-500/50 transition-all' : ''}`}
           >
@@ -841,6 +914,133 @@ const App: React.FC = () => {
                     </div>
                   </div>
                 ))}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Run Detail Modal */}
+      {selectedRunDetail && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center p-6 bg-slate-900/60 backdrop-blur-sm">
+          <div className="bg-white w-full max-w-3xl rounded-3xl shadow-2xl overflow-hidden flex flex-col max-h-[85vh]">
+            <div className="p-6 border-b border-slate-100 flex justify-between items-center bg-white sticky top-0 z-10">
+              <div>
+                <div className="flex items-center gap-3 mb-1">
+                  <h2 className="text-xl font-black text-slate-900 tracking-tighter uppercase">
+                    Run #{selectedRunDetail.run_number}
+                  </h2>
+                  <span className={`text-[8px] px-2 py-0.5 rounded-full font-black uppercase ${
+                    selectedRunDetail.status === 'completed' ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'
+                  }`}>
+                    {selectedRunDetail.status}
+                  </span>
+                </div>
+                <p className="text-[10px] text-slate-500 font-mono">
+                  {selectedRunDetail.town} &middot; {new Date(selectedRunDetail.started_at).toLocaleString()} &middot; {(selectedRunDetail.duration_ms / 1000).toFixed(1)}s
+                </p>
+              </div>
+              <button onClick={() => setSelectedRunDetail(null)} className="p-2 hover:bg-slate-100 rounded-full transition-colors text-slate-400">
+                <Icons.Alert className="w-6 h-6 rotate-45" />
+              </button>
+            </div>
+
+            <div className="p-6 overflow-y-auto flex-grow space-y-6 custom-scrollbar">
+              {/* Run Summary */}
+              {selectedRunDetail.run_summary && (
+                <div className="p-4 bg-green-50 border border-green-100 rounded-xl">
+                  <p className="text-[9px] font-black uppercase tracking-widest text-green-600 mb-1">Summary</p>
+                  <p className="text-sm text-green-800">{selectedRunDetail.run_summary}</p>
+                </div>
+              )}
+
+              {/* Error (if failed) */}
+              {selectedRunDetail.error && (
+                <div className="p-4 bg-red-50 border border-red-100 rounded-xl">
+                  <p className="text-[9px] font-black uppercase tracking-widest text-red-600 mb-1">Error</p>
+                  <p className="text-sm text-red-800 font-mono">{selectedRunDetail.error}</p>
+                </div>
+              )}
+
+              {/* Tool Calls */}
+              <div>
+                <h4 className="text-[10px] font-black uppercase tracking-widest text-slate-400 mb-3">
+                  Tool Calls ({selectedRunDetail.tool_calls.length})
+                </h4>
+                <div className="space-y-1.5">
+                  {selectedRunDetail.tool_calls.map((tc, i) => (
+                    <div key={i} className="flex items-center gap-3 p-2.5 bg-slate-50 rounded-lg border border-slate-100">
+                      <span className={`w-2 h-2 rounded-full flex-shrink-0 ${
+                        tc.fetch_status === 'VERIFIED' ? 'bg-green-500' : 'bg-red-500'
+                      }`} />
+                      <span className="text-[10px] font-bold text-slate-700 flex-grow">{tc.source_id}</span>
+                      <span className={`text-[8px] px-2 py-0.5 rounded font-black uppercase ${
+                        tc.fetch_status === 'VERIFIED' ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'
+                      }`}>
+                        {tc.fetch_status}
+                      </span>
+                      {tc.error && <span className="text-[9px] text-red-500 font-mono truncate max-w-[150px]">{tc.error}</span>}
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              {/* Deltas */}
+              {selectedRunDetail.deltas.length > 0 && (
+                <div>
+                  <h4 className="text-[10px] font-black uppercase tracking-widest text-slate-400 mb-3">
+                    Deltas ({selectedRunDetail.deltas.length})
+                  </h4>
+                  <div className="space-y-1.5">
+                    {selectedRunDetail.deltas.map((d, i) => (
+                      <div key={i} className="flex items-center gap-3 p-2.5 bg-slate-50 rounded-lg border border-slate-100">
+                        <span className={`text-[8px] px-2 py-0.5 rounded font-black uppercase flex-shrink-0 ${
+                          d.significance === 'HIGH' ? 'bg-red-100 text-red-700' :
+                          d.significance === 'MEDIUM' ? 'bg-amber-100 text-amber-700' :
+                          'bg-slate-100 text-slate-500'
+                        }`}>
+                          {d.significance}
+                        </span>
+                        <span className="text-[10px] font-bold text-slate-600">{d.category}</span>
+                        <span className="text-[10px] text-slate-500 truncate">{d.change}</span>
+                        <span className={`text-[8px] px-1.5 py-0.5 rounded font-bold uppercase ml-auto flex-shrink-0 ${
+                          d.trend_direction === 'NEW' ? 'bg-blue-100 text-blue-600' :
+                          d.trend_direction === 'IMPROVING' ? 'bg-green-100 text-green-600' :
+                          d.trend_direction === 'DECLINING' ? 'bg-red-100 text-red-600' :
+                          'bg-slate-100 text-slate-400'
+                        }`}>
+                          {d.trend_direction}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* Verification Report */}
+              {selectedRunDetail.verification_report?.categories && (
+                <div>
+                  <h4 className="text-[10px] font-black uppercase tracking-widest text-slate-400 mb-3">
+                    Verification Report
+                  </h4>
+                  <div className="grid grid-cols-2 gap-2">
+                    <div className="p-3 bg-green-50 border border-green-100 rounded-lg text-center">
+                      <p className="text-2xl font-black text-green-700">{selectedRunDetail.verification_report.verified_count || 0}</p>
+                      <p className="text-[8px] font-bold uppercase tracking-widest text-green-600">Verified</p>
+                    </div>
+                    <div className="p-3 bg-red-50 border border-red-100 rounded-lg text-center">
+                      <p className="text-2xl font-black text-red-700">{selectedRunDetail.verification_report.failed_count || 0}</p>
+                      <p className="text-[8px] font-bold uppercase tracking-widest text-red-600">Failed</p>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* Run ID */}
+              <div className="pt-2 border-t border-slate-100">
+                <p className="text-[9px] font-mono text-slate-400">
+                  Run ID: {selectedRunDetail.run_id}
+                </p>
               </div>
             </div>
           </div>
