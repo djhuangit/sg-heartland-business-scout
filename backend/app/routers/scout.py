@@ -256,6 +256,16 @@ async def get_changelog(town: str):
     return {"changelog": kb.get("changelog", [])}
 
 
+@router.delete("/scout/{town}/cache")
+async def clear_town_cache(town: str):
+    """Clear knowledge base and run history for a town."""
+    global _run_history
+    removed = _knowledge_bases.pop(town, None)
+    _run_history = [r for r in _run_history if r["town"] != town]
+    logger.info("Cache cleared for {} (had_kb={})", town, removed is not None)
+    return {"cleared": town, "had_knowledge_base": removed is not None}
+
+
 @router.post("/dossier/{town}")
 async def create_dossier(town: str, business_type: str = Query(...)):
     """Generate a custom dossier for a specific business type."""
@@ -303,6 +313,22 @@ async def get_run(run_id: str):
     raise HTTPException(status_code=404, detail=f"Run {run_id} not found")
 
 
+def _town_summary_metrics(town: str) -> dict:
+    """Extract summary metrics from the knowledge base for the landing page."""
+    kb = _knowledge_bases.get(town)
+    if not kb:
+        return {}
+    analysis = kb.get("current_analysis", {})
+    recs = analysis.get("recommendations", [])
+    return {
+        "wealth_tier": analysis.get("wealthMetrics", {}).get("wealthTier"),
+        "population": analysis.get("demographicData", {}).get("residentPopulation"),
+        "recommendation_count": len(recs),
+        "top_opportunity_score": max((r.get("opportunityScore", 0) for r in recs), default=None),
+        "commercial_pulse": analysis.get("commercialPulse"),
+    }
+
+
 @router.get("/towns")
 async def list_towns():
     """List all available HDB towns and their analysis status."""
@@ -316,6 +342,7 @@ async def list_towns():
                     (r["completed_at"] for r in reversed(_run_history) if r["town"] == t),
                     None,
                 ),
+                **_town_summary_metrics(t),
             }
             for t in HDB_TOWNS
         ]

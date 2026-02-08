@@ -1,11 +1,83 @@
 
 import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
-import { fetchAnalysis, generateSpecificDossier, createScoutStream, fetchRunHistory, fetchRunDetail } from './services/api';
-import { ScoutStatus, AreaAnalysis, DiscoveryCategory, DataPoint, Recommendation, WorkflowEvent, WorkflowNode, WorkflowRun, RunSummary, RunDetail } from './types';
+import { fetchAnalysis, fetchTowns, generateSpecificDossier, createScoutStream, fetchRunHistory, fetchRunDetail, clearTownCache } from './services/api';
+import { ScoutStatus, AreaAnalysis, TownSummary, DiscoveryCategory, DataPoint, Recommendation, WorkflowEvent, WorkflowNode, WorkflowRun, RunSummary, RunDetail } from './types';
 import { HDB_TOWNS, Icons } from './constants';
 import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, LineChart, Line, ReferenceLine, Legend } from 'recharts';
 
 const STORAGE_KEY_PREFIX = 'scout_sg_data_';
+
+/**
+ * Normalize analysis data from the backend to ensure all required fields exist.
+ * The LLM may omit fields or return null instead of empty arrays, which causes
+ * React rendering crashes (.map() on null).
+ */
+function normalizeAnalysis(data: any): AreaAnalysis {
+  const emptyCategory = (label: string) => ({ label, logs: [] });
+  const dl = data.discoveryLogs || {};
+  const dm = data.demographicData || {};
+  const wm = data.wealthMetrics || {};
+
+  return {
+    town: data.town || '',
+    commercialPulse: data.commercialPulse || '',
+    demographicsFocus: data.demographicsFocus || '',
+    wealthMetrics: {
+      medianHouseholdIncome: wm.medianHouseholdIncome || 'N/A',
+      medianHouseholdIncomePerCapita: wm.medianHouseholdIncomePerCapita || 'N/A',
+      privatePropertyRatio: wm.privatePropertyRatio || '0%',
+      wealthTier: wm.wealthTier || 'Mass Market',
+      sourceNote: wm.sourceNote || '',
+      dataSourceUrl: wm.dataSourceUrl,
+    },
+    demographicData: {
+      residentPopulation: dm.residentPopulation || 'N/A',
+      planningArea: dm.planningArea || data.town || '',
+      ageDistribution: Array.isArray(dm.ageDistribution) ? dm.ageDistribution : [],
+      raceDistribution: Array.isArray(dm.raceDistribution) ? dm.raceDistribution : [],
+      employmentStatus: Array.isArray(dm.employmentStatus) ? dm.employmentStatus : [],
+      dataSourceUrl: dm.dataSourceUrl,
+    },
+    discoveryLogs: {
+      tenders: dl.tenders || emptyCategory('HDB Tender Inventory'),
+      saturation: dl.saturation || emptyCategory('Retail Mix Saturation'),
+      areaSaturation: dl.areaSaturation || emptyCategory('Area Saturation Analysis'),
+      traffic: dl.traffic || emptyCategory('Foot Traffic Proxies'),
+      rental: dl.rental || emptyCategory('Rental Yield Potential'),
+    },
+    pulseTimeline: Array.isArray(data.pulseTimeline) ? data.pulseTimeline : [],
+    recommendations: Array.isArray(data.recommendations)
+      ? data.recommendations.map((r: any) => ({
+          businessType: r.businessType || 'Unknown',
+          category: r.category || 'Other',
+          opportunityScore: r.opportunityScore ?? 0,
+          thesis: r.thesis || '',
+          gapReason: r.gapReason || '',
+          estimatedRental: r.estimatedRental ?? 0,
+          suggestedLocations: Array.isArray(r.suggestedLocations) ? r.suggestedLocations : [],
+          businessProfile: {
+            size: r.businessProfile?.size || 'N/A',
+            targetAudience: r.businessProfile?.targetAudience || 'N/A',
+            strategy: r.businessProfile?.strategy || 'N/A',
+            employees: r.businessProfile?.employees || 'N/A',
+          },
+          financials: {
+            upfrontCost: r.financials?.upfrontCost ?? 0,
+            monthlyCost: r.financials?.monthlyCost ?? 0,
+            monthlyRevenueBad: r.financials?.monthlyRevenueBad ?? 0,
+            monthlyRevenueAvg: r.financials?.monthlyRevenueAvg ?? 0,
+            monthlyRevenueGood: r.financials?.monthlyRevenueGood ?? 0,
+          },
+          dataSourceTitle: r.dataSourceTitle,
+          dataSourceUrl: r.dataSourceUrl,
+        }))
+      : [],
+    activeTenders: Array.isArray(data.activeTenders) ? data.activeTenders : [],
+    sources: Array.isArray(data.sources) ? data.sources : [],
+    monitoringStarted: data.monitoringStarted || new Date().toISOString(),
+    lastScannedAt: data.lastScannedAt || new Date().toISOString(),
+  };
+}
 
 // Mock data for the sidebar rental chart since realis data isn't fully structured in the LLM response yet
 const RENTAL_TREND_DATA = [
@@ -16,6 +88,37 @@ const RENTAL_TREND_DATA = [
   { name: 'Q1', v: 12.5 },
   { name: 'Q2', v: 13.4 }
 ];
+
+// --- Hash routing ---
+type AppView = { page: 'landing' } | { page: 'town'; town: string };
+
+function parseHash(): AppView {
+  const hash = window.location.hash;
+  const townMatch = hash.match(/^#\/town\/(.+)$/);
+  if (townMatch) {
+    return { page: 'town', town: decodeURIComponent(townMatch[1]) };
+  }
+  return { page: 'landing' };
+}
+
+function navigateTo(view: AppView) {
+  if (view.page === 'landing') {
+    window.location.hash = '#/';
+  } else {
+    window.location.hash = `#/town/${encodeURIComponent(view.town)}`;
+  }
+}
+
+function timeAgo(iso: string): string {
+  const diff = Date.now() - new Date(iso).getTime();
+  const mins = Math.floor(diff / 60000);
+  if (mins < 1) return 'just now';
+  if (mins < 60) return `${mins}m ago`;
+  const hrs = Math.floor(mins / 60);
+  if (hrs < 24) return `${hrs}h ago`;
+  const days = Math.floor(hrs / 24);
+  return `${days}d ago`;
+}
 
 const INITIAL_WORKFLOW_NODES: WorkflowNode[] = [
   { id: 'marathon_observer', label: 'Marathon Observer', status: 'pending', toolCalls: [] },
@@ -30,7 +133,9 @@ const INITIAL_WORKFLOW_NODES: WorkflowNode[] = [
 ];
 
 const App: React.FC = () => {
-  const [town, setTown] = useState(HDB_TOWNS[0]);
+  const [view, setView] = useState<AppView>(parseHash);
+  const [landingKey, setLandingKey] = useState(0);
+  const town = view.page === 'town' ? view.town : '';
   const [status, setStatus] = useState<ScoutStatus>(ScoutStatus.IDLE);
   const [analysis, setAnalysis] = useState<AreaAnalysis | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -55,13 +160,30 @@ const App: React.FC = () => {
   const [selectedRunDetail, setSelectedRunDetail] = useState<RunDetail | null>(null);
   const [isLoadingRunDetail, setIsLoadingRunDetail] = useState(false);
 
+  // Sync hash → view state
+  useEffect(() => {
+    const onHashChange = () => setView(parseHash());
+    window.addEventListener('hashchange', onHashChange);
+    return () => window.removeEventListener('hashchange', onHashChange);
+  }, []);
+
+  // Reset state when navigating to landing
+  useEffect(() => {
+    if (view.page === 'landing') {
+      setAnalysis(null);
+      setStatus(ScoutStatus.IDLE);
+      setWorkflowRun(null);
+    }
+  }, [view.page]);
+
   // Load analysis from backend on town change, fallback to localStorage
   useEffect(() => {
+    if (!town) return;
     let cancelled = false;
     fetchAnalysis(town)
       .then((data) => {
         if (!cancelled) {
-          setAnalysis(data);
+          setAnalysis(normalizeAnalysis(data));
           setStatus(ScoutStatus.REPORTING);
         }
       })
@@ -69,8 +191,13 @@ const App: React.FC = () => {
         if (!cancelled) {
           const saved = localStorage.getItem(STORAGE_KEY_PREFIX + town);
           if (saved) {
-            setAnalysis(JSON.parse(saved));
-            setStatus(ScoutStatus.REPORTING);
+            try {
+              setAnalysis(normalizeAnalysis(JSON.parse(saved)));
+              setStatus(ScoutStatus.REPORTING);
+            } catch {
+              setAnalysis(null);
+              setStatus(ScoutStatus.IDLE);
+            }
           } else {
             setAnalysis(null);
             setStatus(ScoutStatus.IDLE);
@@ -89,6 +216,7 @@ const App: React.FC = () => {
 
   // Fetch run history when town changes or after a scan completes
   useEffect(() => {
+    if (!town) return;
     fetchRunHistory(town).then(data => setRunHistory(data.runs)).catch(() => setRunHistory([]));
   }, [town, status]);
 
@@ -212,7 +340,7 @@ const App: React.FC = () => {
             // Fetch the completed analysis
             fetchAnalysis(town)
               .then(data => {
-                setAnalysis(data);
+                setAnalysis(normalizeAnalysis(data));
                 setStatus(ScoutStatus.REPORTING);
               })
               .catch(() => setStatus(ScoutStatus.REPORTING));
@@ -245,9 +373,10 @@ const App: React.FC = () => {
     setIsGeneratingCustom(true);
     try {
       const newRec = await generateSpecificDossier(town, customPrompt);
+      const normalizedRec = normalizeAnalysis({ recommendations: [newRec] }).recommendations[0];
       const updatedAnalysis = {
         ...analysis,
-        recommendations: [newRec, ...analysis.recommendations]
+        recommendations: [normalizedRec, ...analysis.recommendations]
       };
       setAnalysis(updatedAnalysis);
       setCustomPrompt("");
@@ -307,40 +436,67 @@ const App: React.FC = () => {
   return (
     <div className="min-h-screen bg-slate-50 text-slate-900 overflow-x-hidden pb-12">
       <header className="sticky top-0 z-50 bg-white border-b border-slate-200 px-6 py-4 flex items-center justify-between shadow-sm">
-        <div className="flex items-center gap-3">
+        <div className="flex items-center gap-3 cursor-pointer" onClick={() => navigateTo({ page: 'landing' })}>
           <div className="bg-red-600 p-2 rounded-lg shadow-inner">
             <Icons.Map className="w-6 h-6 text-white" />
           </div>
           <div>
             <h1 className="text-xl font-bold tracking-tight">Heartland Scout <span className="text-red-600">SG</span></h1>
             <p className="text-xs text-slate-500 font-medium uppercase tracking-tighter">
-              {analysis ? `Monitoring ${analysis.town} since ${analysis.monitoringStarted}` : 'Business Intelligence Engine'}
+              {view.page === 'town' ? `Monitoring ${town}` : 'Business Intelligence Engine'}
             </p>
           </div>
         </div>
-        <div className="flex gap-4">
-          <select 
-            value={town}
-            onChange={(e) => setTown(e.target.value)}
-            className="bg-slate-100 border-none rounded-md px-4 py-2 text-sm font-semibold focus:ring-2 focus:ring-red-500 min-w-[200px]"
-          >
-            {HDB_TOWNS.map(t => <option key={t} value={t}>{t}</option>)}
-          </select>
-          <button 
-            onClick={handleScout}
-            disabled={status === ScoutStatus.SCANNING}
-            className={`px-8 py-2 rounded-md text-sm font-bold transition-all disabled:opacity-50 flex items-center gap-2 shadow-sm ${
-              isStale ? 'bg-orange-600 hover:bg-orange-700 animate-pulse' : 'bg-red-600 hover:bg-red-700'
-            } text-white`}
-          >
-            {status === ScoutStatus.SCANNING ? 'Syncing...' : isStale ? 'Sync for Today' : 'Identify Gaps'}
-            <Icons.Search className="w-4 h-4" />
-          </button>
-        </div>
+        {view.page === 'town' && (
+          <div className="flex gap-3">
+            {analysis && (
+              <button
+                onClick={() => {
+                  clearTownCache(town).catch(() => {});
+                  localStorage.removeItem(STORAGE_KEY_PREFIX + town);
+                  setAnalysis(null);
+                  setStatus(ScoutStatus.IDLE);
+                  setWorkflowRun(null);
+                  setRunHistory([]);
+                  setLandingKey(k => k + 1);
+                }}
+                className="px-4 py-2 rounded-md text-sm font-medium border border-slate-200 text-slate-500 hover:text-red-600 hover:border-red-200 transition-colors flex items-center gap-1.5"
+              >
+                <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" /></svg>
+                Clear Cache
+              </button>
+            )}
+            <button
+              onClick={handleScout}
+              disabled={status === ScoutStatus.SCANNING}
+              className={`px-8 py-2 rounded-md text-sm font-bold transition-all disabled:opacity-50 flex items-center gap-2 shadow-sm ${
+                isStale ? 'bg-orange-600 hover:bg-orange-700 animate-pulse' : 'bg-red-600 hover:bg-red-700'
+              } text-white`}
+            >
+              {status === ScoutStatus.SCANNING ? 'Syncing...' : isStale ? 'Sync for Today' : 'Identify Gaps'}
+              <Icons.Search className="w-4 h-4" />
+            </button>
+          </div>
+        )}
       </header>
 
-      <main className="max-w-7xl mx-auto p-6 grid grid-cols-1 lg:grid-cols-12 gap-6">
-        
+      <main className="max-w-7xl mx-auto p-6">
+        {view.page === 'landing' && <LandingPage key={landingKey} onSelectTown={(t) => navigateTo({ page: 'town', town: t })} />}
+
+        {view.page === 'town' && (
+        <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+
+        {/* Breadcrumb */}
+        <div className="lg:col-span-12">
+          <button
+            onClick={() => navigateTo({ page: 'landing' })}
+            className="flex items-center gap-1.5 text-sm text-slate-400 hover:text-red-600 transition-colors font-medium"
+          >
+            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" /></svg>
+            All Towns
+          </button>
+        </div>
+
         {/* Sidebar Feed - Left Column */}
         <div className="lg:col-span-4 flex flex-col gap-6">
           {/* Discovery Loop */}
@@ -853,6 +1009,9 @@ const App: React.FC = () => {
             </>
           )}
         </div>
+        {/* Close town view wrapper */}
+        </div>
+        )}
       </main>
 
       {/* Modals & Popovers */}
@@ -1058,6 +1217,162 @@ const App: React.FC = () => {
         .custom-scrollbar-dark::-webkit-scrollbar-track { background: #020617; }
         .custom-scrollbar-dark::-webkit-scrollbar-thumb { background: #334155; border-radius: 10px; }
       `}</style>
+    </div>
+  );
+};
+
+const LandingPage: React.FC<{ onSelectTown: (town: string) => void }> = ({ onSelectTown }) => {
+  const [towns, setTowns] = useState<TownSummary[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    fetchTowns()
+      .then(serverTowns => {
+        // Enrich with localStorage cache for towns the server doesn't know about
+        // (e.g. after server restart, localStorage still has previous analysis)
+        const enriched = serverTowns.map(t => {
+          if (t.has_analysis) return t;
+          const cached = localStorage.getItem(STORAGE_KEY_PREFIX + t.name);
+          if (!cached) return t;
+          try {
+            const a = JSON.parse(cached);
+            return {
+              ...t,
+              has_analysis: true,
+              _cached: true,
+              wealth_tier: a.wealthMetrics?.wealthTier,
+              population: a.demographicData?.residentPopulation,
+              recommendation_count: a.recommendations?.length ?? 0,
+              top_opportunity_score: a.recommendations?.length
+                ? Math.max(...a.recommendations.map((r: any) => r.opportunityScore ?? 0))
+                : undefined,
+              commercial_pulse: a.commercialPulse,
+              last_run_at: a.lastScannedAt || t.last_run_at,
+            } as TownSummary & { _cached?: boolean };
+          } catch {
+            return t;
+          }
+        });
+        setTowns(enriched);
+      })
+      .catch(() => {})
+      .finally(() => setLoading(false));
+  }, []);
+
+  const scannedCount = towns.filter(t => t.has_analysis).length;
+
+  const getStatusBadge = (t: TownSummary & { _cached?: boolean }) => {
+    if (!t.has_analysis) return { label: 'Not scanned', cls: 'bg-slate-100 text-slate-500' };
+    if ((t as any)._cached) return { label: 'Cached', cls: 'bg-blue-100 text-blue-700' };
+    if (t.last_run_at) {
+      const hoursAgo = (Date.now() - new Date(t.last_run_at).getTime()) / 3600000;
+      if (hoursAgo > 24) return { label: 'Stale', cls: 'bg-amber-100 text-amber-700' };
+    }
+    return { label: 'Scanned', cls: 'bg-green-100 text-green-700' };
+  };
+
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center py-32">
+        <div className="w-8 h-8 border-4 border-slate-200 border-t-red-600 rounded-full animate-spin" />
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-8">
+      {/* Hero */}
+      <div className="bg-slate-900 rounded-2xl p-8 text-white relative overflow-hidden">
+        <div className="absolute top-0 right-0 p-8 opacity-10">
+          <Icons.Map className="w-48 h-48" />
+        </div>
+        <div className="relative z-10">
+          <h2 className="text-3xl font-black tracking-tight mb-2">27 HDB Heartland Towns</h2>
+          <p className="text-slate-400 text-sm max-w-lg">
+            Select any town to decode its commercial DNA. The engine gathers real-time data from Singapore government APIs and generates investment-grade business recommendations.
+          </p>
+          <div className="flex gap-6 mt-6">
+            <div>
+              <p className="text-2xl font-black text-red-500">{scannedCount}</p>
+              <p className="text-[9px] font-bold uppercase tracking-widest text-slate-500">Towns Scanned</p>
+            </div>
+            <div>
+              <p className="text-2xl font-black text-slate-300">{27 - scannedCount}</p>
+              <p className="text-[9px] font-bold uppercase tracking-widest text-slate-500">Awaiting Analysis</p>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* Grid */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
+        {towns.map(t => {
+          const badge = getStatusBadge(t);
+          return (
+            <div
+              key={t.name}
+              onClick={() => onSelectTown(t.name)}
+              className="bg-white rounded-xl border border-slate-200 p-5 cursor-pointer hover:border-red-200 hover:shadow-md transition-all group"
+            >
+              <div className="flex justify-between items-start mb-3">
+                <h3 className="text-sm font-black text-slate-900 uppercase tracking-wide group-hover:text-red-600 transition-colors">
+                  {t.name}
+                </h3>
+                <span className={`text-[8px] px-2 py-0.5 rounded-full font-black uppercase tracking-wider ${badge.cls}`}>
+                  {badge.label}
+                </span>
+              </div>
+
+              {t.has_analysis ? (
+                <div className="space-y-3">
+                  {t.commercial_pulse && (
+                    <p className="text-[11px] text-slate-500 leading-relaxed line-clamp-2">"{t.commercial_pulse}"</p>
+                  )}
+                  <div className="grid grid-cols-2 gap-2">
+                    {t.wealth_tier && (
+                      <div className="bg-slate-50 rounded-lg px-2 py-1.5">
+                        <p className="text-[8px] font-bold text-slate-400 uppercase tracking-wider">Wealth</p>
+                        <p className="text-[11px] font-bold text-slate-700">{t.wealth_tier}</p>
+                      </div>
+                    )}
+                    {t.population && (
+                      <div className="bg-slate-50 rounded-lg px-2 py-1.5">
+                        <p className="text-[8px] font-bold text-slate-400 uppercase tracking-wider">Population</p>
+                        <p className="text-[11px] font-bold text-slate-700">{t.population}</p>
+                      </div>
+                    )}
+                    {t.recommendation_count != null && (
+                      <div className="bg-slate-50 rounded-lg px-2 py-1.5">
+                        <p className="text-[8px] font-bold text-slate-400 uppercase tracking-wider">Opportunities</p>
+                        <p className="text-[11px] font-bold text-slate-700">{t.recommendation_count}</p>
+                      </div>
+                    )}
+                    {t.top_opportunity_score != null && (
+                      <div className="bg-slate-50 rounded-lg px-2 py-1.5">
+                        <p className="text-[8px] font-bold text-slate-400 uppercase tracking-wider">Top Score</p>
+                        <p className={`text-[11px] font-bold ${t.top_opportunity_score >= 85 ? 'text-green-600' : 'text-slate-700'}`}>{t.top_opportunity_score}</p>
+                      </div>
+                    )}
+                  </div>
+                  <div className="flex items-center justify-between pt-1">
+                    <span className="text-[9px] font-mono text-slate-400">
+                      {t.total_runs} run{t.total_runs !== 1 ? 's' : ''}
+                    </span>
+                    <span className="text-[9px] font-mono text-slate-400">
+                      {t.last_run_at ? timeAgo(t.last_run_at) : 'Never'}
+                    </span>
+                  </div>
+                </div>
+              ) : (
+                <div className="py-4 text-center">
+                  <p className="text-[10px] text-slate-400 italic">Click to analyze</p>
+                  <Icons.Search className="w-5 h-5 text-slate-200 mx-auto mt-2 group-hover:text-red-300 transition-colors" />
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
     </div>
   );
 };

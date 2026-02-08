@@ -1,5 +1,5 @@
 
-import { AreaAnalysis, Recommendation, RunSummary, RunDetail } from '../types';
+import { AreaAnalysis, Recommendation, RunSummary, RunDetail, TownSummary } from '../types';
 
 const API_BASE = 'http://localhost:8000/api';
 
@@ -9,10 +9,14 @@ export const fetchAnalysis = async (town: string): Promise<AreaAnalysis> => {
   return res.json();
 };
 
-export const fetchTowns = async (): Promise<Array<{ name: string; has_analysis: boolean; total_runs: number; last_run_at: string | null }>> => {
+export const fetchTowns = async (): Promise<TownSummary[]> => {
   const res = await fetch(`${API_BASE}/towns`);
   const data = await res.json();
   return data.towns;
+};
+
+export const clearTownCache = async (town: string): Promise<void> => {
+  await fetch(`${API_BASE}/scout/${town}/cache`, { method: 'DELETE' });
 };
 
 export const generateSpecificDossier = async (

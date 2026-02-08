@@ -110,6 +110,20 @@ export interface AreaAnalysis {
   lastScannedAt: string;
 }
 
+// --- Landing Page Types ---
+
+export interface TownSummary {
+  name: string;
+  has_analysis: boolean;
+  total_runs: number;
+  last_run_at: string | null;
+  wealth_tier?: string;
+  population?: string;
+  recommendation_count?: number;
+  top_opportunity_score?: number;
+  commercial_pulse?: string;
+}
+
 // --- Run History Types ---
 
 export interface RunSummary {
