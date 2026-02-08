@@ -17,7 +17,18 @@ export default defineConfig(({ mode }) => {
       resolve: {
         alias: {
           '@': path.resolve(__dirname, '.'),
+          // Force CJS entry for dagre — its ESM bundle has broken require() calls
+          '@dagrejs/dagre': path.resolve(__dirname, 'node_modules/@dagrejs/dagre/dist/dagre.cjs.js'),
         }
+      },
+      optimizeDeps: {
+        include: ['@dagrejs/dagre'],
+      },
+      build: {
+        commonjsOptions: {
+          include: [/@dagrejs/, /node_modules/],
+          transformMixedEsModules: true,
+        },
       }
     };
 });

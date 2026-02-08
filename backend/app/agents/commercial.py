@@ -9,6 +9,7 @@ from app.tools.hdb import fetch_hdb_commercial
 from app.tools.ura import fetch_rental_vacancy
 from app.tools.web_search import search_web
 from app.models.state import ScoutState
+from app.routers._event_queue import emit
 
 SYSTEM_PROMPT = """You are a commercial property research agent for Singapore HDB towns.
 
@@ -43,24 +44,57 @@ Output a JSON object with:
 def commercial_agent(state: ScoutState) -> dict:
     """Fetch HDB tenders and URA rental data for the town."""
     town = state["town"]
+    run_id = state.get("_run_id", "")
     now = datetime.now(timezone.utc).isoformat()
     logger.info("[commercial] Starting for {}", town)
 
+    emit(run_id, "node_started", "commercial_agent")
+
     tool_results = []
 
+    emit(run_id, "agent_log", "commercial_agent", {
+        "type": "tool_start", "tool": "hdb_commercial",
+        "message": f"Fetching HDB resale & commercial data for {town}..."
+    })
     hdb_result = fetch_hdb_commercial.invoke({"town": town})
     tool_results.append(hdb_result)
     logger.info("[commercial] hdb_commercial: {}", hdb_result["fetch_status"])
+    emit(run_id, "agent_log", "commercial_agent", {
+        "type": "tool_result", "tool": "hdb_commercial",
+        "status": hdb_result["fetch_status"],
+        "message": f"hdb_commercial: {hdb_result['fetch_status']}",
+        "url": hdb_result.get("raw_url"),
+    })
 
+    emit(run_id, "agent_log", "commercial_agent", {
+        "type": "tool_start", "tool": "ura_rental",
+        "message": f"Fetching URA rental & vacancy data..."
+    })
     ura_result = fetch_rental_vacancy.invoke({"town": town})
     tool_results.append(ura_result)
     logger.info("[commercial] rental_vacancy: {}", ura_result["fetch_status"])
+    emit(run_id, "agent_log", "commercial_agent", {
+        "type": "tool_result", "tool": "ura_rental",
+        "status": ura_result["fetch_status"],
+        "message": f"ura_rental: {ura_result['fetch_status']}",
+        "url": ura_result.get("raw_url"),
+    })
 
+    emit(run_id, "agent_log", "commercial_agent", {
+        "type": "tool_start", "tool": "web_search",
+        "message": f"Searching web for {town} commercial & tender data..."
+    })
     web_result = search_web.invoke(
         {"query": f"{town} Singapore HDB commercial tender 2025 2026 rental psf"}
     )
     tool_results.append(web_result)
     logger.info("[commercial] web_search: {}", web_result["fetch_status"])
+    emit(run_id, "agent_log", "commercial_agent", {
+        "type": "tool_result", "tool": "web_search",
+        "status": web_result["fetch_status"],
+        "message": f"web_search: {web_result['fetch_status']}",
+        "url": web_result.get("raw_url"),
+    })
 
     llm = ChatGoogleGenerativeAI(
         model="gemini-2.0-flash",
@@ -75,6 +109,11 @@ def commercial_agent(state: ScoutState) -> dict:
         data_preview = str(tr.get("data", ""))[:2000] if tr.get("data") else "NO DATA"
         tool_summary += f"\n--- Tool: {source} | Status: {status} | Error: {error} ---\n{data_preview}\n"
 
+    emit(run_id, "agent_log", "commercial_agent", {
+        "type": "llm_start",
+        "message": f"Analyzing commercial data with Gemini 2.0 Flash ({len(tool_summary)} chars input)..."
+    })
+
     response = llm.invoke([
         SystemMessage(content=SYSTEM_PROMPT),
         HumanMessage(content=f"""Analyze commercial property data for {town}, Singapore. Today is {now[:10]}.
@@ -88,6 +127,14 @@ If tools failed, note failures in discoveryLogs and mark data accordingly.
     ])
     logger.info("[commercial] LLM response: {} chars", len(response.content))
     logger.success("[commercial] Complete for {}", town)
+
+    preview = response.content[:200] + "..." if len(response.content) > 200 else response.content
+    emit(run_id, "agent_log", "commercial_agent", {
+        "type": "llm_done",
+        "message": f"LLM response: {len(response.content)} chars",
+        "preview": preview,
+    })
+    emit(run_id, "node_completed", "commercial_agent")
 
     return {
         "commercial_raw": [{

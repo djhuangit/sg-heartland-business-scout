@@ -7,6 +7,7 @@ from langchain_core.messages import SystemMessage, HumanMessage
 
 from app.config import settings
 from app.models.state import MarathonState
+from app.routers._event_queue import emit
 
 SYSTEM_PROMPT = """You are a knowledge integration agent. Your job is to synthesize raw agent outputs
 into a complete AreaAnalysis JSON object that matches this exact structure:
@@ -67,10 +68,17 @@ RULES:
 def knowledge_integrator(state: MarathonState) -> dict:
     """Merge agent outputs into a coherent AreaAnalysis, respecting the knowledge base."""
     town = state["town"]
+    run_id = state.get("_run_id", "")
     kb = state.get("knowledge_base")
     now = datetime.now(timezone.utc).isoformat()
     total_runs = (kb.get("total_runs", 0) if kb else 0) + 1
     logger.info("[integrator] Merging for {} — run #{}", town, total_runs)
+
+    emit(run_id, "node_started", "knowledge_integrator")
+    emit(run_id, "agent_log", "knowledge_integrator", {
+        "type": "tool_start", "tool": "merge_kb",
+        "message": f"Merging agent outputs for {town} (run #{total_runs})..."
+    })
 
     # Collect all raw agent outputs
     demographics = state.get("demographics_raw", [])
@@ -102,6 +110,11 @@ def knowledge_integrator(state: MarathonState) -> dict:
         model="gemini-2.0-flash",
         google_api_key=settings.gemini_api_key,
     )
+
+    emit(run_id, "agent_log", "knowledge_integrator", {
+        "type": "llm_start",
+        "message": f"Synthesizing AreaAnalysis with Gemini 2.0 Flash..."
+    })
 
     response = llm.invoke([
         SystemMessage(content=SYSTEM_PROMPT),
@@ -176,6 +189,14 @@ def knowledge_integrator(state: MarathonState) -> dict:
     logger.info("[integrator] Analysis: {} chars, {} recommendations",
         len(str(analysis)), len(analysis.get("recommendations", [])))
     logger.success("[integrator] KB merged for {} — run #{}", town, updated_kb["total_runs"])
+
+    preview = str(analysis.get("commercialPulse", ""))[:200]
+    emit(run_id, "agent_log", "knowledge_integrator", {
+        "type": "llm_done",
+        "message": f"Analysis: {len(analysis.get('recommendations', []))} recommendations",
+        "preview": preview,
+    })
+    emit(run_id, "node_completed", "knowledge_integrator")
 
     return {
         "updated_knowledge_base": updated_kb,

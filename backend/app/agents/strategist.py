@@ -7,6 +7,7 @@ from langchain_core.messages import SystemMessage, HumanMessage
 
 from app.config import settings
 from app.models.state import MarathonState
+from app.routers._event_queue import emit
 
 SYSTEM_PROMPT = """You are a strategic investment advisor for Singapore HDB heartlands.
 You are called ONLY when significant changes have been detected in the market.
@@ -43,10 +44,17 @@ def strategist(state: MarathonState) -> dict:
     Only called when delta_detector found HIGH significance changes."""
     analysis = state.get("analysis", {})
     deltas = state.get("deltas", [])
+    run_id = state.get("_run_id", "")
     now = datetime.now(timezone.utc).isoformat()
 
     high_deltas = [d for d in deltas if d.get("significance") == "HIGH"]
     logger.info("[strategist] Re-evaluating due to {} HIGH changes", len(high_deltas))
+
+    emit(run_id, "node_started", "strategist")
+    emit(run_id, "agent_log", "strategist", {
+        "type": "llm_start",
+        "message": f"Re-evaluating strategy due to {len(high_deltas)} HIGH significance changes..."
+    })
 
     llm = ChatGoogleGenerativeAI(
         model="gemini-2.0-flash",
@@ -93,6 +101,13 @@ Please provide updated recommendations reflecting these changes."""
     })
     analysis["pulseTimeline"] = timeline[:100]
     logger.success("[strategist] Updated {} recommendations", len(analysis.get("recommendations", [])))
+
+    emit(run_id, "agent_log", "strategist", {
+        "type": "llm_done",
+        "message": f"Updated {len(analysis.get('recommendations', []))} recommendations",
+        "preview": str(analysis.get("recommendations", [{}])[0].get("businessType", ""))[:200] if analysis.get("recommendations") else "",
+    })
+    emit(run_id, "node_completed", "strategist")
 
     return {
         "analysis": analysis,

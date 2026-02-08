@@ -3,6 +3,7 @@ from datetime import datetime, timezone
 from loguru import logger
 
 from app.models.state import ScoutState
+from app.routers._event_queue import emit
 
 
 def source_verifier(state: ScoutState) -> dict:
@@ -13,8 +14,15 @@ def source_verifier(state: ScoutState) -> dict:
     - Produces verification_report and fetch_failures list
     """
     tool_calls = state.get("tool_calls", [])
+    run_id = state.get("_run_id", "")
     now = datetime.now(timezone.utc).isoformat()
     logger.info("[verifier] Starting — {} tool calls to verify", len(tool_calls))
+
+    emit(run_id, "node_started", "source_verifier")
+    emit(run_id, "agent_log", "source_verifier", {
+        "type": "tool_start", "tool": "cross_reference",
+        "message": f"Cross-referencing {len(tool_calls)} tool call results..."
+    })
 
     failed_tools = []
     verified_tools = []
@@ -72,6 +80,13 @@ def source_verifier(state: ScoutState) -> dict:
 
     logger.info("[verifier] {} tool calls — {} verified, {} failed",
         len(tool_calls), verification_report["verified_count"], verification_report["failed_count"])
+
+    emit(run_id, "agent_log", "source_verifier", {
+        "type": "tool_result", "tool": "cross_reference",
+        "status": "VERIFIED",
+        "message": f"Verified {verification_report['verified_count']}, failed {verification_report['failed_count']} of {len(tool_calls)} calls",
+    })
+    emit(run_id, "node_completed", "source_verifier")
 
     return {
         "verification_report": verification_report,

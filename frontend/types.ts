@@ -165,9 +165,20 @@ export interface RunDetail {
 export interface WorkflowEvent {
   timestamp: string;
   event_type: 'run_started' | 'node_started' | 'tool_result' | 'node_completed'
-    | 'delta_detected' | 'verification_flag' | 'run_completed' | 'run_failed';
+    | 'delta_detected' | 'verification_flag' | 'run_completed' | 'run_failed' | 'agent_log';
   node: string;
   detail: Record<string, any>;
+}
+
+export interface AgentLogEntry {
+  type: 'tool_start' | 'tool_result' | 'llm_start' | 'llm_done';
+  message: string;
+  tool?: string;
+  status?: string;
+  error?: string;
+  preview?: string;
+  url?: string;
+  timestamp: string;
 }
 
 export interface ToolCallEntry {
@@ -182,7 +193,9 @@ export interface WorkflowNode {
   label: string;
   status: 'pending' | 'running' | 'completed' | 'skipped' | 'failed';
   toolCalls: ToolCallEntry[];
+  logs: AgentLogEntry[];
   summary?: string;
+  llmPreview?: string;
 }
 
 export interface WorkflowRun {

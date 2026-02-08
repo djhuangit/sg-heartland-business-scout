@@ -1,4 +1,5 @@
 import asyncio
+import multiprocessing
 import time
 import uuid
 from contextlib import asynccontextmanager
@@ -16,7 +17,12 @@ from app.routers.scout import HDB_TOWNS, _knowledge_bases, _run_history
 
 setup_logging()
 
-scheduler = AsyncIOScheduler()
+# Prevent leaked semaphore warnings on macOS — uvicorn's reloader uses fork()
+multiprocessing.set_start_method("forkserver", force=True)
+
+scheduler = AsyncIOScheduler(
+    job_defaults={"coalesce": True, "max_instances": 1},
+)
 
 
 async def daily_marathon():
@@ -97,7 +103,7 @@ async def lifespan(app: FastAPI):
     scheduler.start()
     logger.info("Scheduler started — daily marathon at 06:00")
     yield
-    scheduler.shutdown()
+    scheduler.shutdown(wait=False)
 
 
 app = FastAPI(title="Heartland Scout SG — Backend", lifespan=lifespan)

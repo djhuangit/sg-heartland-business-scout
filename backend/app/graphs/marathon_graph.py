@@ -2,6 +2,7 @@ from loguru import logger
 from langgraph.graph import StateGraph, START, END
 
 from app.models.state import MarathonState
+from app.routers._event_queue import emit
 from app.agents.marathon_observer import marathon_observer
 from app.agents.delta_detector import delta_detector
 from app.agents.knowledge_integrator import knowledge_integrator
@@ -14,6 +15,7 @@ def _scout_pipeline(state: MarathonState) -> dict:
     Maps MarathonState fields to ScoutState and back."""
     scout_input = {
         "town": state["town"],
+        "_run_id": state.get("_run_id", ""),
         "research_directive": state.get("research_directive", {}),
         "demographics_raw": [],
         "commercial_raw": [],
@@ -40,9 +42,12 @@ def _scout_pipeline(state: MarathonState) -> dict:
 def persist_to_db(state: MarathonState) -> dict:
     """Persist the updated knowledge base.
     For now, just passes through — DB persistence added in Phase 6."""
+    run_id = state.get("_run_id", "")
     kb = state.get("updated_knowledge_base", {})
+    emit(run_id, "node_started", "persist")
     logger.success("[persist] KB saved for {} — run #{}",
         kb.get("town", "?"), kb.get("total_runs", 0))
+    emit(run_id, "node_completed", "persist")
     return {
         "run_summary": state.get("run_summary", "Run complete."),
     }

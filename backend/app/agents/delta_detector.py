@@ -4,6 +4,7 @@ import json
 from loguru import logger
 
 from app.models.state import MarathonState
+from app.routers._event_queue import emit
 
 
 def delta_detector(state: MarathonState) -> dict:
@@ -15,8 +16,15 @@ def delta_detector(state: MarathonState) -> dict:
     - trend_direction: IMPROVING / DECLINING / STABLE / NEW
     """
     kb = state.get("knowledge_base")
+    run_id = state.get("_run_id", "")
     now = datetime.now(timezone.utc).isoformat()
     deltas = []
+
+    emit(run_id, "node_started", "delta_detector")
+    emit(run_id, "agent_log", "delta_detector", {
+        "type": "tool_start", "tool": "compare_kb",
+        "message": f"Comparing new data against {'existing' if kb else 'empty'} knowledge base..."
+    })
 
     # Cold start: everything is NEW
     if not kb:
@@ -27,6 +35,12 @@ def delta_detector(state: MarathonState) -> dict:
             "significance": "HIGH",
             "trend_direction": "NEW",
         })
+        emit(run_id, "agent_log", "delta_detector", {
+            "type": "tool_result", "tool": "compare_kb",
+            "status": "VERIFIED",
+            "message": "Cold start — all data is NEW (1 delta, HIGH significance)",
+        })
+        emit(run_id, "node_completed", "delta_detector")
         return {"deltas": deltas}
 
     current_analysis = kb.get("current_analysis", {})
@@ -92,5 +106,12 @@ def delta_detector(state: MarathonState) -> dict:
     med = sum(1 for d in deltas if d.get("significance") == "MEDIUM")
     low = sum(1 for d in deltas if d.get("significance") == "LOW")
     logger.info("[delta] {} deltas detected (HIGH={}, MEDIUM={}, LOW={})", len(deltas), high, med, low)
+
+    emit(run_id, "agent_log", "delta_detector", {
+        "type": "tool_result", "tool": "compare_kb",
+        "status": "VERIFIED",
+        "message": f"{len(deltas)} deltas (HIGH={high}, MEDIUM={med}, LOW={low})",
+    })
+    emit(run_id, "node_completed", "delta_detector")
 
     return {"deltas": deltas}

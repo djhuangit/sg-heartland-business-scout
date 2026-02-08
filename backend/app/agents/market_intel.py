@@ -7,6 +7,7 @@ from langchain_core.messages import SystemMessage, HumanMessage
 from app.config import settings
 from app.tools.web_search import search_web
 from app.models.state import ScoutState
+from app.routers._event_queue import emit
 
 SYSTEM_PROMPT = """You are a market intelligence agent for Singapore HDB towns.
 
@@ -39,31 +40,61 @@ Output a JSON object with:
 def market_intel_agent(state: ScoutState) -> dict:
     """Analyze business mix, saturation, and foot traffic for the town."""
     town = state["town"]
+    run_id = state.get("_run_id", "")
     now = datetime.now(timezone.utc).isoformat()
     logger.info("[market_intel] Starting for {}", town)
+
+    emit(run_id, "node_started", "market_intel_agent")
 
     tool_results = []
 
     # Search for business mix
+    emit(run_id, "agent_log", "market_intel_agent", {
+        "type": "tool_start", "tool": "web_search_biz",
+        "message": f"Searching web for {town} business mix & directory..."
+    })
     biz_result = search_web.invoke(
         {"query": f"{town} Singapore HDB shops business directory F&B retail 2025"}
     )
     tool_results.append(biz_result)
     logger.info("[market_intel] web_search (biz_mix): {}", biz_result["fetch_status"])
+    emit(run_id, "agent_log", "market_intel_agent", {
+        "type": "tool_result", "tool": "web_search_biz",
+        "status": biz_result["fetch_status"],
+        "message": f"web_search (biz_mix): {biz_result['fetch_status']}",
+    })
 
     # Search for foot traffic / transport
+    emit(run_id, "agent_log", "market_intel_agent", {
+        "type": "tool_start", "tool": "web_search_traffic",
+        "message": f"Searching web for {town} foot traffic & transport..."
+    })
     traffic_result = search_web.invoke(
         {"query": f"{town} Singapore MRT station bus interchange foot traffic daily ridership"}
     )
     tool_results.append(traffic_result)
     logger.info("[market_intel] web_search (traffic): {}", traffic_result["fetch_status"])
+    emit(run_id, "agent_log", "market_intel_agent", {
+        "type": "tool_result", "tool": "web_search_traffic",
+        "status": traffic_result["fetch_status"],
+        "message": f"web_search (traffic): {traffic_result['fetch_status']}",
+    })
 
     # Search for saturation / competition
+    emit(run_id, "agent_log", "market_intel_agent", {
+        "type": "tool_start", "tool": "web_search_saturation",
+        "message": f"Searching web for {town} commercial saturation..."
+    })
     sat_result = search_web.invoke(
         {"query": f"{town} Singapore new shop openings commercial vacancy rate 2025 2026"}
     )
     tool_results.append(sat_result)
     logger.info("[market_intel] web_search (saturation): {}", sat_result["fetch_status"])
+    emit(run_id, "agent_log", "market_intel_agent", {
+        "type": "tool_result", "tool": "web_search_saturation",
+        "status": sat_result["fetch_status"],
+        "message": f"web_search (saturation): {sat_result['fetch_status']}",
+    })
 
     llm = ChatGoogleGenerativeAI(
         model="gemini-2.0-flash",
@@ -78,6 +109,11 @@ def market_intel_agent(state: ScoutState) -> dict:
         data_preview = str(tr.get("data", ""))[:2000] if tr.get("data") else "NO DATA"
         tool_summary += f"\n--- Tool: {source} | Status: {status} | Error: {error} ---\n{data_preview}\n"
 
+    emit(run_id, "agent_log", "market_intel_agent", {
+        "type": "llm_start",
+        "message": f"Analyzing market intelligence with Gemini 2.0 Flash ({len(tool_summary)} chars input)..."
+    })
+
     response = llm.invoke([
         SystemMessage(content=SYSTEM_PROMPT),
         HumanMessage(content=f"""Analyze business landscape for {town}, Singapore.
@@ -91,6 +127,14 @@ If tools failed, note failures in discoveryLogs.
     ])
     logger.info("[market_intel] LLM response: {} chars", len(response.content))
     logger.success("[market_intel] Complete for {}", town)
+
+    preview = response.content[:200] + "..." if len(response.content) > 200 else response.content
+    emit(run_id, "agent_log", "market_intel_agent", {
+        "type": "llm_done",
+        "message": f"LLM response: {len(response.content)} chars",
+        "preview": preview,
+    })
+    emit(run_id, "node_completed", "market_intel_agent")
 
     return {
         "market_intel_raw": [{

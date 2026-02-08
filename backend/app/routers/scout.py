@@ -10,6 +10,7 @@ from sse_starlette.sse import EventSourceResponse
 
 from app.graphs.marathon_graph import marathon_graph
 from app.graphs.dossier_graph import generate_dossier
+from app.routers._event_queue import create_queue, remove_queue
 
 router = APIRouter()
 
@@ -48,6 +49,8 @@ async def stream_scout(town: str):
         run_id = str(uuid.uuid4())
         started_at = datetime.now(timezone.utc).isoformat()
         start_time = time.monotonic()
+        q = create_queue(run_id)
+        directive = "cold_start"
 
         try:
             logger.info("Scout stream started for {} (run {})", town, run_id[:8])
@@ -55,15 +58,11 @@ async def stream_scout(town: str):
 
             kb = _knowledge_bases.get(town)
             directive = "cold_start" if not kb else "incremental"
-            logger.info("Marathon observer: {}", directive)
 
-            # Step 1: Marathon Observer
-            yield {"event": "message", "data": _emit_event("node_started", "marathon_observer")}
-            await asyncio.sleep(0.1)
-
-            # Prepare initial state
+            # Prepare initial state with _run_id for live event emitting
             initial_state = {
                 "town": town,
+                "_run_id": run_id,
                 "knowledge_base": kb,
                 "research_directive": {},
                 "demographics_raw": [],
@@ -79,96 +78,50 @@ async def stream_scout(town: str):
                 "run_summary": "",
             }
 
-            # Run the full marathon graph in a thread (blocking LangGraph call)
-            # We emit simulated progress events to show the pipeline stages
-            yield {"event": "message", "data": _emit_event("node_completed", "marathon_observer",
-                {"directive": "cold_start" if not kb else "incremental"})}
+            # Run pipeline in background — agents push events to queue in real-time
+            pipeline_done = asyncio.Event()
+            pipeline_result = {}
+            pipeline_error = None
 
-            # Emit node_started for the parallel agents
-            yield {"event": "message", "data": _emit_event("node_started", "demographics_agent")}
-            yield {"event": "message", "data": _emit_event("node_started", "commercial_agent")}
-            yield {"event": "message", "data": _emit_event("node_started", "market_intel_agent")}
+            async def run_pipeline():
+                nonlocal pipeline_result, pipeline_error
+                try:
+                    pipeline_result = await asyncio.to_thread(marathon_graph.invoke, initial_state)
+                except Exception as exc:
+                    pipeline_error = exc
+                finally:
+                    pipeline_done.set()
 
-            # Run the full pipeline
-            logger.info("Pipeline running for {} ...", town)
-            result = await asyncio.to_thread(marathon_graph.invoke, initial_state)
+            asyncio.create_task(run_pipeline())
 
-            # Emit tool results from the verification report
-            tool_calls = result.get("tool_calls", [])
-            deltas = result.get("deltas", [])
-            logger.info("Pipeline complete — {} tool calls, {} deltas", len(tool_calls), len(deltas))
-            for tc in tool_calls:
-                source = tc.get("source_id", "unknown")
-                status = tc.get("fetch_status", "UNAVAILABLE")
-                error = tc.get("error")
+            # Stream events from queue until pipeline completes
+            while not pipeline_done.is_set():
+                try:
+                    event = await asyncio.to_thread(q.get, timeout=0.5)
+                    yield {"event": "message", "data": json.dumps(event)}
+                except Exception:
+                    pass  # Queue empty, loop again
 
-                # Determine which agent this belongs to
-                if "singstat" in source:
-                    node = "demographics_agent"
-                elif "hdb" in source:
-                    node = "commercial_agent"
-                elif "ura" in source:
-                    node = "commercial_agent"
-                else:
-                    node = "market_intel_agent"
+            # Drain remaining events from queue
+            while not q.empty():
+                try:
+                    event = q.get_nowait()
+                    yield {"event": "message", "data": json.dumps(event)}
+                except Exception:
+                    break
 
-                yield {"event": "message", "data": _emit_event("tool_result", node, {
-                    "tool": source,
-                    "status": status,
-                    "error": error,
-                    "url": tc.get("raw_url"),
-                })}
-                await asyncio.sleep(0.05)
+            remove_queue(run_id)
 
-            # Emit agent completions
-            yield {"event": "message", "data": _emit_event("node_completed", "demographics_agent")}
-            yield {"event": "message", "data": _emit_event("node_completed", "commercial_agent")}
-            yield {"event": "message", "data": _emit_event("node_completed", "market_intel_agent")}
+            # Check for pipeline error
+            if pipeline_error:
+                raise pipeline_error
 
-            # Source verifier
-            yield {"event": "message", "data": _emit_event("node_started", "source_verifier")}
-            vr = result.get("verification_report", {})
-            for cat, info in vr.get("categories", {}).items():
-                if info.get("status") == "UNAVAILABLE":
-                    yield {"event": "message", "data": _emit_event("verification_flag", "source_verifier", {
-                        "category": cat,
-                        "status": "UNAVAILABLE",
-                        "sources": info.get("sources", []),
-                    })}
-            yield {"event": "message", "data": _emit_event("node_completed", "source_verifier", {
-                "verified": vr.get("verified_count", 0),
-                "failed": vr.get("failed_count", 0),
-            })}
+            result = pipeline_result
 
-            # Delta detector
-            yield {"event": "message", "data": _emit_event("node_started", "delta_detector")}
-            deltas = result.get("deltas", [])
-            for delta in deltas:
-                yield {"event": "message", "data": _emit_event("delta_detected", "delta_detector", delta)}
-                await asyncio.sleep(0.05)
-            yield {"event": "message", "data": _emit_event("node_completed", "delta_detector",
-                {"count": len(deltas)})}
-
-            # Knowledge integrator
-            yield {"event": "message", "data": _emit_event("node_started", "knowledge_integrator")}
-            yield {"event": "message", "data": _emit_event("node_completed", "knowledge_integrator")}
-
-            # Strategist (conditional)
-            high_deltas = [d for d in deltas if d.get("significance") == "HIGH"]
-            if high_deltas:
-                yield {"event": "message", "data": _emit_event("node_started", "strategist")}
-                yield {"event": "message", "data": _emit_event("node_completed", "strategist",
-                    {"reason": f"{len(high_deltas)} HIGH significance changes"})}
-            else:
-                yield {"event": "message", "data": _emit_event("node_started", "strategist",
-                    {"status": "skipped", "reason": "No HIGH significance changes"})}
-
-            # Persist
-            yield {"event": "message", "data": _emit_event("node_started", "persist")}
+            # Persist KB
             updated_kb = result.get("updated_knowledge_base")
             if updated_kb:
                 _knowledge_bases[town] = updated_kb
-            yield {"event": "message", "data": _emit_event("node_completed", "persist")}
 
             # Record run history
             completed_at = datetime.now(timezone.utc).isoformat()
@@ -192,7 +145,7 @@ async def stream_scout(town: str):
             _run_history.append(run_record)
             logger.success("Run {} persisted — {}ms", run_id[:8], duration_ms)
 
-            # Final
+            # Final completion event
             yield {"event": "message", "data": _emit_event("run_completed", "marathon", {
                 "run_summary": result.get("run_summary", ""),
                 "town": town,
@@ -202,6 +155,7 @@ async def stream_scout(town: str):
 
         except Exception as e:
             logger.exception("Scout stream failed for {}", town)
+            remove_queue(run_id)
             completed_at = datetime.now(timezone.utc).isoformat()
             duration_ms = int((time.monotonic() - start_time) * 1000)
             _run_history.append({

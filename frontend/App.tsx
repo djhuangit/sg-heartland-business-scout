@@ -1,9 +1,12 @@
 
-import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
+import React, { useState, useEffect, useMemo, useCallback, useRef, memo } from 'react';
 import { fetchAnalysis, fetchTowns, generateSpecificDossier, createScoutStream, fetchRunHistory, fetchRunDetail, clearTownCache } from './services/api';
-import { ScoutStatus, AreaAnalysis, TownSummary, DiscoveryCategory, DataPoint, Recommendation, WorkflowEvent, WorkflowNode, WorkflowRun, RunSummary, RunDetail } from './types';
+import { ScoutStatus, AreaAnalysis, TownSummary, DiscoveryCategory, DataPoint, Recommendation, WorkflowEvent, WorkflowNode, WorkflowRun, AgentLogEntry, RunSummary, RunDetail } from './types';
 import { HDB_TOWNS, Icons } from './constants';
 import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, LineChart, Line, ReferenceLine, Legend } from 'recharts';
+import { ReactFlow, Handle, Position, Background, Controls, useNodesState, useEdgesState } from '@xyflow/react';
+import '@xyflow/react/dist/style.css';
+import dagre from '@dagrejs/dagre';
 
 const STORAGE_KEY_PREFIX = 'scout_sg_data_';
 
@@ -121,16 +124,90 @@ function timeAgo(iso: string): string {
 }
 
 const INITIAL_WORKFLOW_NODES: WorkflowNode[] = [
-  { id: 'marathon_observer', label: 'Marathon Observer', status: 'pending', toolCalls: [] },
-  { id: 'demographics_agent', label: 'Demographics Agent', status: 'pending', toolCalls: [] },
-  { id: 'commercial_agent', label: 'Commercial Agent', status: 'pending', toolCalls: [] },
-  { id: 'market_intel_agent', label: 'Market Intel Agent', status: 'pending', toolCalls: [] },
-  { id: 'source_verifier', label: 'Source Verifier', status: 'pending', toolCalls: [] },
-  { id: 'delta_detector', label: 'Delta Detector', status: 'pending', toolCalls: [] },
-  { id: 'knowledge_integrator', label: 'Knowledge Integrator', status: 'pending', toolCalls: [] },
-  { id: 'strategist', label: 'Strategist', status: 'pending', toolCalls: [] },
-  { id: 'persist', label: 'Persist', status: 'pending', toolCalls: [] },
+  { id: 'marathon_observer', label: 'Marathon Observer', status: 'pending', toolCalls: [], logs: [] },
+  { id: 'demographics_agent', label: 'Demographics Agent', status: 'pending', toolCalls: [], logs: [] },
+  { id: 'commercial_agent', label: 'Commercial Agent', status: 'pending', toolCalls: [], logs: [] },
+  { id: 'market_intel_agent', label: 'Market Intel Agent', status: 'pending', toolCalls: [], logs: [] },
+  { id: 'source_verifier', label: 'Source Verifier', status: 'pending', toolCalls: [], logs: [] },
+  { id: 'delta_detector', label: 'Delta Detector', status: 'pending', toolCalls: [], logs: [] },
+  { id: 'knowledge_integrator', label: 'Knowledge Integrator', status: 'pending', toolCalls: [], logs: [] },
+  { id: 'strategist', label: 'Strategist', status: 'pending', toolCalls: [], logs: [] },
+  { id: 'persist', label: 'Persist', status: 'pending', toolCalls: [], logs: [] },
 ];
+
+// --- React Flow Pipeline Topology ---
+const PIPELINE_NODE_DEFS = [
+  { id: 'marathon_observer', label: 'Marathon Observer' },
+  { id: 'demographics_agent', label: 'Demographics Agent' },
+  { id: 'commercial_agent', label: 'Commercial Agent' },
+  { id: 'market_intel_agent', label: 'Market Intel Agent' },
+  { id: 'source_verifier', label: 'Source Verifier' },
+  { id: 'delta_detector', label: 'Delta Detector' },
+  { id: 'knowledge_integrator', label: 'Knowledge Integrator' },
+  { id: 'strategist', label: 'Strategist' },
+  { id: 'persist', label: 'Persist' },
+];
+
+const PIPELINE_EDGE_DEFS = [
+  { id: 'e-obs-demo', source: 'marathon_observer', target: 'demographics_agent' },
+  { id: 'e-obs-comm', source: 'marathon_observer', target: 'commercial_agent' },
+  { id: 'e-obs-mkt', source: 'marathon_observer', target: 'market_intel_agent' },
+  { id: 'e-demo-ver', source: 'demographics_agent', target: 'source_verifier' },
+  { id: 'e-comm-ver', source: 'commercial_agent', target: 'source_verifier' },
+  { id: 'e-mkt-ver', source: 'market_intel_agent', target: 'source_verifier' },
+  { id: 'e-ver-delta', source: 'source_verifier', target: 'delta_detector' },
+  { id: 'e-delta-ki', source: 'delta_detector', target: 'knowledge_integrator' },
+  { id: 'e-ki-strat', source: 'knowledge_integrator', target: 'strategist' },
+  { id: 'e-ki-persist', source: 'knowledge_integrator', target: 'persist' },
+  { id: 'e-strat-persist', source: 'strategist', target: 'persist' },
+];
+
+const RF_NODE_W = 320;
+const RF_NODE_H = 120;
+
+function getLayoutedElements(workflowNodes: WorkflowNode[]) {
+  const g = new dagre.graphlib.Graph().setDefaultEdgeLabel(() => ({}));
+  g.setGraph({ rankdir: 'TB', nodesep: 60, ranksep: 80 });
+  PIPELINE_NODE_DEFS.forEach(n => g.setNode(n.id, { width: RF_NODE_W, height: RF_NODE_H }));
+  PIPELINE_EDGE_DEFS.forEach(e => g.setEdge(e.source, e.target));
+  dagre.layout(g);
+
+  const nodes = PIPELINE_NODE_DEFS.map(n => {
+    const pos = g.node(n.id);
+    const wn = workflowNodes.find(w => w.id === n.id);
+    return {
+      id: n.id,
+      type: 'agent' as const,
+      position: { x: pos.x - RF_NODE_W / 2, y: pos.y - RF_NODE_H / 2 },
+      data: {
+        label: n.label,
+        status: wn?.status || 'pending',
+        toolCalls: wn?.toolCalls || [],
+        logs: wn?.logs || [],
+        llmPreview: wn?.llmPreview,
+      },
+    };
+  });
+
+  const edges = PIPELINE_EDGE_DEFS.map(e => {
+    const src = workflowNodes.find(w => w.id === e.source);
+    const tgt = workflowNodes.find(w => w.id === e.target);
+    const isActive = src?.status === 'completed' && tgt?.status === 'running';
+    const isDone = src?.status === 'completed' && (tgt?.status === 'completed' || tgt?.status === 'skipped');
+    return {
+      id: e.id,
+      source: e.source,
+      target: e.target,
+      animated: isActive,
+      style: {
+        stroke: isDone ? '#22c55e' : isActive ? '#ef4444' : '#cbd5e1',
+        strokeWidth: isActive ? 2 : 1,
+      },
+    };
+  });
+
+  return { nodes, edges };
+}
 
 const App: React.FC = () => {
   const [view, setView] = useState<AppView>(parseHash);
@@ -140,10 +217,17 @@ const App: React.FC = () => {
   const [analysis, setAnalysis] = useState<AreaAnalysis | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [selectedLog, setSelectedLog] = useState<DiscoveryCategory | null>(null);
+  const [selectedNode, setSelectedNode] = useState<string | null>(null);
   const [showTimelineModal, setShowTimelineModal] = useState(false);
 
   // Workflow visualizer state
-  const [workflowRun, setWorkflowRun] = useState<WorkflowRun | null>(null);
+  const [workflowRun, setWorkflowRun] = useState<WorkflowRun | null>(() => {
+    if (!town) return null;
+    try {
+      const saved = sessionStorage.getItem('scout_workflow_' + town);
+      return saved ? JSON.parse(saved) : null;
+    } catch { return null; }
+  });
   const eventSourceRef = useRef<EventSource | null>(null);
 
   // Recommendations Filter State
@@ -214,6 +298,13 @@ const App: React.FC = () => {
     }
   }, [analysis]);
 
+  // Persist workflowRun to sessionStorage
+  useEffect(() => {
+    if (workflowRun && town) {
+      sessionStorage.setItem('scout_workflow_' + town, JSON.stringify(workflowRun));
+    }
+  }, [workflowRun, town]);
+
   // Fetch run history when town changes or after a scan completes
   useEffect(() => {
     if (!town) return;
@@ -266,7 +357,7 @@ const App: React.FC = () => {
     const run: WorkflowRun = {
       town,
       status: 'running',
-      nodes: INITIAL_WORKFLOW_NODES.map(n => ({ ...n, toolCalls: [] })),
+      nodes: INITIAL_WORKFLOW_NODES.map(n => ({ ...n, toolCalls: [], logs: [] })),
       deltas: [],
       verificationFlags: [],
     };
@@ -344,6 +435,33 @@ const App: React.FC = () => {
                 setStatus(ScoutStatus.REPORTING);
               })
               .catch(() => setStatus(ScoutStatus.REPORTING));
+            break;
+
+          case 'agent_log':
+            setWorkflowRun(prev => {
+              if (!prev) return prev;
+              return {
+                ...prev,
+                nodes: prev.nodes.map(n =>
+                  n.id === event.node
+                    ? {
+                        ...n,
+                        logs: [...n.logs, {
+                          type: event.detail.type,
+                          message: event.detail.message,
+                          tool: event.detail.tool,
+                          status: event.detail.status,
+                          error: event.detail.error,
+                          preview: event.detail.preview,
+                          url: event.detail.url,
+                          timestamp: event.timestamp,
+                        }],
+                        ...(event.detail.type === 'llm_done' ? { llmPreview: event.detail.preview } : {}),
+                      }
+                    : n
+                ),
+              };
+            });
             break;
 
           case 'run_failed':
@@ -454,6 +572,7 @@ const App: React.FC = () => {
                 onClick={() => {
                   clearTownCache(town).catch(() => {});
                   localStorage.removeItem(STORAGE_KEY_PREFIX + town);
+                  sessionStorage.removeItem('scout_workflow_' + town);
                   setAnalysis(null);
                   setStatus(ScoutStatus.IDLE);
                   setWorkflowRun(null);
@@ -499,40 +618,13 @@ const App: React.FC = () => {
 
         {/* Sidebar Feed - Left Column */}
         <div className="lg:col-span-4 flex flex-col gap-6">
-          {/* Discovery Loop */}
-          <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-6 flex flex-col h-[520px]">
-            <div className="flex justify-between items-start mb-4">
-              <h2 className="text-sm font-bold uppercase tracking-wider text-slate-400">Discovery Loop</h2>
-              {analysis && (
-                <div className="flex items-center gap-1.5 px-2 py-0.5 bg-slate-50 border border-slate-100 rounded text-[9px] font-bold text-slate-500">
-                  <span className="w-1.5 h-1.5 bg-green-500 rounded-full" />
-                  PERSISTENT
-                </div>
-              )}
-            </div>
-            
-            <div className="flex items-center gap-4 mb-6 flex-shrink-0">
-              <div className={`relative w-12 h-12 rounded-full flex items-center justify-center ${status === ScoutStatus.SCANNING ? 'pulse-ring' : ''} bg-red-50`}>
-                <Icons.Map className="w-6 h-6 text-red-600" />
-              </div>
-              <div>
-                <p className="font-bold text-slate-800 leading-tight">
-                  {status === ScoutStatus.IDLE ? 'Awaiting Scan' : status === ScoutStatus.SCANNING ? 'Live Syncing...' : 'Archive Active'}
-                </p>
-                <p className="text-[10px] text-slate-500 uppercase font-mono mt-1">
-                  Context: {town.toUpperCase()}
-                </p>
-              </div>
-            </div>
-
-            <div className="flex-grow overflow-y-auto space-y-5 pr-2 custom-scrollbar">
-              <LoopItem label="HDB Tender Inventory" active={status === ScoutStatus.SCANNING} done={!!analysis} category={analysis?.discoveryLogs?.tenders} onOpenModal={setSelectedLog} />
-              <LoopItem label="Retail Mix Saturation" active={status === ScoutStatus.SCANNING} done={!!analysis} category={analysis?.discoveryLogs?.saturation} onOpenModal={setSelectedLog} />
-              <LoopItem label="Area Saturation Analysis" active={status === ScoutStatus.SCANNING} done={!!analysis} category={analysis?.discoveryLogs?.areaSaturation} onOpenModal={setSelectedLog} />
-              <LoopItem label="Foot Traffic Proxies" active={status === ScoutStatus.SCANNING} done={!!analysis} category={analysis?.discoveryLogs?.traffic} onOpenModal={setSelectedLog} />
-              <LoopItem label="Rental Yield Potential" active={status === ScoutStatus.SCANNING} done={!!analysis} category={analysis?.discoveryLogs?.rental} onOpenModal={setSelectedLog} />
-            </div>
-          </div>
+          {/* Agent Activity Panel — compact linear view */}
+          {workflowRun && (
+            <AgentActivityPanel
+              workflowRun={workflowRun}
+              onOpenDetail={() => setSelectedNode('__pipeline__')}
+            />
+          )}
 
           {analysis && (
             <>
@@ -699,10 +791,6 @@ const App: React.FC = () => {
               <h3 className="text-xl font-bold text-slate-800 tracking-tight">Heartland Scout Engine</h3>
               <p className="text-slate-500 max-w-sm mt-2 italic font-serif leading-relaxed">"Select a planning area to decode its DNA. We synthesize SingStat demographics with real-time commercial opportunities."</p>
             </div>
-          )}
-
-          {status === ScoutStatus.SCANNING && workflowRun && (
-            <WorkflowVisualizer run={workflowRun} />
           )}
 
           {status === ScoutStatus.ERROR && error && (
@@ -1014,7 +1102,14 @@ const App: React.FC = () => {
         )}
       </main>
 
-      {/* Modals & Popovers */}
+      {/* Pipeline Detail Modal */}
+      {selectedNode && workflowRun && (
+        <PipelineDetailModal
+          workflowRun={workflowRun}
+          onClose={() => setSelectedNode(null)}
+        />
+      )}
+
       {selectedLog && (
         <div className="fixed inset-0 z-[100] flex items-center justify-center p-6 bg-slate-900/60 backdrop-blur-sm">
           <div className="bg-white w-full max-w-2xl rounded-3xl shadow-2xl overflow-hidden flex flex-col max-h-[80vh]">
@@ -1377,153 +1472,119 @@ const LandingPage: React.FC<{ onSelectTown: (town: string) => void }> = ({ onSel
   );
 };
 
-const WorkflowVisualizer: React.FC<{ run: WorkflowRun }> = ({ run }) => {
-  const getStatusIcon = (status: WorkflowNode['status']) => {
-    switch (status) {
-      case 'running':
-        return <div className="w-3 h-3 border-2 border-red-200 border-t-red-600 rounded-full animate-spin" />;
-      case 'completed':
-        return (
-          <div className="bg-green-100 p-0.5 rounded-full">
-            <svg className="w-2.5 h-2.5 text-green-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={4} d="M5 13l4 4L19 7" />
-            </svg>
-          </div>
-        );
-      case 'skipped':
-        return <div className="w-2.5 h-2.5 bg-slate-300 rounded-full" />;
-      case 'failed':
-        return <div className="w-2.5 h-2.5 bg-red-500 rounded-full" />;
-      default:
-        return <div className="w-2 h-2 bg-slate-200 rounded-full" />;
-    }
+const AgentNode = memo(({ data }: { data: any }) => {
+  const statusColors: Record<string, string> = {
+    pending: 'border-slate-200 bg-slate-50',
+    running: 'border-red-300 bg-red-50 shadow-md shadow-red-100',
+    completed: 'border-green-300 bg-white hover:bg-slate-50 cursor-pointer',
+    skipped: 'border-slate-200 bg-slate-50 opacity-50',
+    failed: 'border-red-400 bg-red-50',
   };
 
-  const getToolStatusBadge = (status: string) => {
-    if (status === 'VERIFIED') return 'bg-green-100 text-green-700 border-green-200';
-    if (status === 'UNAVAILABLE') return 'bg-red-100 text-red-700 border-red-200';
-    if (status === 'STALE') return 'bg-amber-100 text-amber-700 border-amber-200';
-    return 'bg-slate-100 text-slate-500 border-slate-200';
+  const statusIcons: Record<string, string | null> = {
+    pending: '\u25CB',
+    running: null,
+    completed: '\u2713',
+    skipped: '\u2014',
+    failed: '\u2715',
   };
-
-  const completedCount = run.nodes.filter(n => n.status === 'completed' || n.status === 'skipped').length;
-  const totalNodes = run.nodes.length;
 
   return (
-    <div className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
+    <div className={`rounded-xl border-2 px-6 py-5 min-w-[300px] transition-all ${statusColors[data.status] || ''}`}>
+      <Handle type="target" position={Position.Top} className="!bg-slate-300 !w-3 !h-3" />
+
       {/* Header */}
-      <div className="p-6 border-b border-slate-100 bg-slate-50/50">
-        <div className="flex justify-between items-center mb-3">
-          <h3 className="text-sm font-black uppercase tracking-[0.2em] text-slate-400 flex items-center gap-2">
-            <span className={`w-2 h-2 rounded-full ${run.status === 'running' ? 'bg-red-500 animate-pulse' : run.status === 'completed' ? 'bg-green-500' : 'bg-red-500'}`} />
-            Agent Marathon Pipeline
-          </h3>
-          <span className="text-[10px] font-mono text-slate-400 uppercase">{run.town}</span>
-        </div>
-        {/* Progress bar */}
-        <div className="w-full h-1.5 bg-slate-100 rounded-full overflow-hidden">
-          <div
-            className="h-full bg-gradient-to-r from-red-500 to-red-600 transition-all duration-500 ease-out rounded-full"
-            style={{ width: `${(completedCount / totalNodes) * 100}%` }}
-          />
-        </div>
-        <p className="text-[9px] font-mono text-slate-400 mt-2">{completedCount}/{totalNodes} nodes complete</p>
+      <div className="flex items-center gap-3 mb-2">
+        {data.status === 'running' ? (
+          <div className="w-5 h-5 border-2 border-slate-300 border-t-red-500 rounded-full animate-spin" />
+        ) : (
+          <span className={`text-base font-bold ${
+            data.status === 'completed' ? 'text-green-600' :
+            data.status === 'failed' ? 'text-red-600' : 'text-slate-400'
+          }`}>{statusIcons[data.status]}</span>
+        )}
+        <span className="text-base font-bold text-slate-700 truncate">{data.label}</span>
       </div>
 
-      {/* Nodes */}
-      <div className="p-4 space-y-1">
-        {run.nodes.map(node => (
-          <div key={node.id} className={`p-3 rounded-lg transition-all ${node.status === 'running' ? 'bg-red-50/50 border border-red-100' : 'hover:bg-slate-50'}`}>
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-3">
-                {getStatusIcon(node.status)}
-                <span className={`text-xs font-bold uppercase tracking-wider ${
-                  node.status === 'running' ? 'text-red-600' :
-                  node.status === 'completed' ? 'text-slate-700' :
-                  node.status === 'skipped' ? 'text-slate-400' :
-                  'text-slate-300'
-                }`}>
-                  {node.label}
-                </span>
-              </div>
-              {node.summary && (
-                <span className="text-[9px] font-mono text-slate-400 truncate max-w-[200px]">{node.summary}</span>
+      {/* Tool call badges */}
+      {data.toolCalls.length > 0 && (
+        <div className="flex flex-wrap gap-1.5 mt-2">
+          {data.toolCalls.map((tc: any, i: number) => (
+            <span key={i} className={`text-xs px-2.5 py-0.5 rounded-full font-bold ${
+              tc.status === 'VERIFIED' ? 'bg-green-100 text-green-700' :
+              tc.status === 'pending' ? 'bg-slate-100 text-slate-500' :
+              'bg-red-100 text-red-600'
+            }`}>{tc.tool?.replace(/_/g, ' ') || 'tool'}</span>
+          ))}
+        </div>
+      )}
+
+      {/* Live logs (last 3, only when running) */}
+      {data.status === 'running' && data.logs.length > 0 && (
+        <div className="mt-3 space-y-1.5 border-t border-slate-100 pt-2.5">
+          {data.logs.slice(-3).map((log: any, i: number) => (
+            <div key={i} className="flex items-center gap-2 text-xs font-mono text-slate-500 truncate">
+              {(log.type === 'tool_start' || log.type === 'llm_start') && (
+                <div className="w-2.5 h-2.5 border border-slate-300 border-t-red-500 rounded-full animate-spin flex-shrink-0" />
               )}
+              {log.type === 'tool_result' && (
+                <span className={`w-2.5 h-2.5 rounded-full flex-shrink-0 ${log.status === 'VERIFIED' ? 'bg-green-500' : 'bg-red-500'}`} />
+              )}
+              {log.type === 'llm_done' && (
+                <span className="w-2.5 h-2.5 bg-blue-500 rounded-full flex-shrink-0" />
+              )}
+              <span className="truncate">{log.message}</span>
             </div>
-
-            {/* Tool Calls */}
-            {node.toolCalls.length > 0 && (
-              <div className="mt-2 ml-6 flex flex-wrap gap-1.5">
-                {node.toolCalls.map((tc, idx) => (
-                  <span
-                    key={idx}
-                    className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-md border text-[8px] font-bold uppercase tracking-wider ${getToolStatusBadge(tc.status)}`}
-                    title={tc.error || tc.url || ''}
-                  >
-                    {tc.status === 'VERIFIED' ? (
-                      <svg className="w-2 h-2" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={4} d="M5 13l4 4L19 7" /></svg>
-                    ) : tc.status === 'UNAVAILABLE' ? (
-                      <svg className="w-2 h-2" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={4} d="M6 18L18 6M6 6l12 12" /></svg>
-                    ) : null}
-                    {tc.tool}
-                  </span>
-                ))}
-              </div>
-            )}
-          </div>
-        ))}
-      </div>
-
-      {/* Deltas panel */}
-      {run.deltas.length > 0 && (
-        <div className="px-4 pb-3">
-          <div className="p-3 bg-slate-900 rounded-lg">
-            <p className="text-[9px] font-black uppercase tracking-widest text-slate-400 mb-2">Changes Detected</p>
-            <div className="space-y-1">
-              {run.deltas.map((d, i) => (
-                <div key={i} className="flex items-center gap-2">
-                  <span className={`text-[8px] px-1.5 py-0.5 rounded font-black uppercase ${
-                    d.significance === 'HIGH' ? 'bg-red-900/50 text-red-400' :
-                    d.significance === 'MEDIUM' ? 'bg-amber-900/50 text-amber-400' :
-                    'bg-slate-800 text-slate-500'
-                  }`}>
-                    {d.significance}
-                  </span>
-                  <span className="text-[10px] text-slate-300 truncate">{d.change || d.category}</span>
-                </div>
-              ))}
-            </div>
-          </div>
+          ))}
         </div>
       )}
 
-      {/* Verification flags */}
-      {run.verificationFlags.length > 0 && (
-        <div className="px-4 pb-4">
-          <div className="p-3 bg-amber-50 border border-amber-100 rounded-lg">
-            <p className="text-[9px] font-black uppercase tracking-widest text-amber-600 mb-2">Verification Flags</p>
-            <div className="space-y-1">
-              {run.verificationFlags.map((f, i) => (
-                <div key={i} className="flex items-center gap-2 text-[10px]">
-                  <Icons.Alert className="w-3 h-3 text-amber-500 flex-shrink-0" />
-                  <span className="font-bold text-amber-700">{f.category}</span>
-                  <span className="text-amber-600">— {f.status}</span>
-                </div>
-              ))}
-            </div>
-          </div>
-        </div>
-      )}
+      <Handle type="source" position={Position.Bottom} className="!bg-slate-300 !w-3 !h-3" />
+    </div>
+  );
+});
 
-      {/* Run complete summary */}
-      {run.status === 'completed' && run.runSummary && (
-        <div className="px-4 pb-4">
-          <div className="p-3 bg-green-50 border border-green-100 rounded-lg">
-            <p className="text-[9px] font-black uppercase tracking-widest text-green-600 mb-1">Run Complete</p>
-            <p className="text-xs text-green-700">{run.runSummary}</p>
-          </div>
-        </div>
-      )}
+const nodeTypes = { agent: AgentNode };
+
+const PipelineFlow: React.FC<{
+  workflowRun: WorkflowRun;
+  onNodeClick?: (nodeId: string) => void;
+}> = ({ workflowRun, onNodeClick }) => {
+  const { nodes: layoutedNodes, edges: layoutedEdges } = useMemo(
+    () => getLayoutedElements(workflowRun.nodes),
+    [workflowRun.nodes]
+  );
+
+  const [nodes, setNodes, onNodesChange] = useNodesState<any>(layoutedNodes);
+  const [edges, setEdges, onEdgesChange] = useEdgesState<any>(layoutedEdges);
+
+  // Keep data in sync when workflow status changes
+  const prevNodesRef = useRef(layoutedNodes);
+  useEffect(() => {
+    if (prevNodesRef.current !== layoutedNodes) {
+      prevNodesRef.current = layoutedNodes;
+      setNodes(layoutedNodes);
+      setEdges(layoutedEdges);
+    }
+  }, [layoutedNodes, layoutedEdges, setNodes, setEdges]);
+
+  return (
+    <div style={{ width: '100%', height: '70vh' }}>
+      <ReactFlow
+        nodes={nodes}
+        edges={edges}
+        onNodesChange={onNodesChange}
+        onEdgesChange={onEdgesChange}
+        onNodeClick={(_, node) => onNodeClick?.(node.id)}
+        nodeTypes={nodeTypes}
+        fitView
+        fitViewOptions={{ padding: 0.2 }}
+        nodesConnectable={false}
+        proOptions={{ hideAttribution: true }}
+      >
+        <Background color="#f1f5f9" gap={16} />
+        <Controls />
+      </ReactFlow>
     </div>
   );
 };
@@ -1760,48 +1821,399 @@ const DistributionBar: React.FC<{ label: string; value: number; color: string }>
   </div>
 );
 
-const LoopItem: React.FC<{ 
-  label: string; 
-  active: boolean; 
-  done: boolean; 
-  category?: DiscoveryCategory;
-  onOpenModal: (cat: DiscoveryCategory) => void;
-}> = ({ label, active, done, category, onOpenModal }) => (
-  <div className="flex flex-col gap-1.5">
-    <div className="flex items-center justify-between">
-      <span className={`text-[9px] font-bold uppercase tracking-widest ${active ? 'text-red-600 animate-pulse' : done ? 'text-slate-800' : 'text-slate-300'}`}>
-        {label}
-      </span>
-      {active ? (
-        <div className="w-3 h-3 border-2 border-red-200 border-t-red-600 rounded-full animate-spin" />
-      ) : done ? (
-        <div className="bg-green-100 p-0.5 rounded-full ring-1 ring-green-50 shadow-sm">
-          <svg className="w-2.5 h-2.5 text-green-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={5} d="M5 13l4 4L19 7" />
-          </svg>
-        </div>
-      ) : (
-        <div className="w-1.5 h-1.5 bg-slate-100 rounded-full" />
-      )}
-    </div>
-    {done && category && (
-      <div onClick={() => onOpenModal(category)} className="p-3 bg-slate-50 border border-slate-100 rounded-xl cursor-pointer hover:border-red-100 hover:bg-red-50/20 transition-all group overflow-hidden shadow-sm">
-        <div className="space-y-2">
-          {category.logs.slice(0, 1).map((log, i) => (
-            <div key={i} className="flex flex-col border-l border-red-200 pl-2">
-              <span className="text-[7px] font-mono text-slate-400 block mb-0.5 uppercase tracking-tighter">{log.timestamp}</span>
-              <p className="text-[9px] text-slate-700 font-bold leading-tight line-clamp-1 group-hover:text-red-600 transition-colors">{log.action}</p>
-            </div>
-          ))}
-          {category.logs.length > 1 && (
-            <p className="text-[8px] font-bold text-slate-400 uppercase tracking-widest text-center mt-1 group-hover:text-red-600 transition-colors">
-              +{category.logs.length - 1} Events
-            </p>
+// --- Agent Activity Panel (compact sidebar widget) ---
+const AgentActivityPanel: React.FC<{
+  workflowRun: WorkflowRun;
+  onOpenDetail: () => void;
+}> = ({ workflowRun, onOpenDetail }) => {
+  const completedCount = workflowRun.nodes.filter(n => n.status === 'completed' || n.status === 'skipped').length;
+  const runningNode = workflowRun.nodes.find(n => n.status === 'running');
+
+  return (
+    <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
+      {/* Header */}
+      <div
+        className="px-4 py-3 border-b border-slate-100 flex items-center justify-between cursor-pointer hover:bg-slate-50 transition-colors"
+        onClick={onOpenDetail}
+      >
+        <div className="flex items-center gap-2.5">
+          {workflowRun.status === 'running' ? (
+            <div className="w-3.5 h-3.5 border-2 border-slate-200 border-t-red-500 rounded-full animate-spin" />
+          ) : workflowRun.status === 'completed' ? (
+            <span className="text-green-600 text-sm font-bold">{'\u2713'}</span>
+          ) : (
+            <span className="text-red-600 text-sm font-bold">{'\u2715'}</span>
           )}
+          <h3 className="text-[10px] font-black text-slate-900 uppercase tracking-wider">Agent Pipeline</h3>
+          <span className="text-[9px] font-mono text-slate-400">{completedCount}/{workflowRun.nodes.length}</span>
+        </div>
+        <div className="flex items-center gap-2">
+          <span className={`text-[8px] px-2 py-0.5 rounded-full font-bold uppercase ${
+            workflowRun.status === 'running' ? 'bg-red-100 text-red-700 animate-pulse' :
+            workflowRun.status === 'completed' ? 'bg-green-100 text-green-700' :
+            'bg-red-100 text-red-600'
+          }`}>{workflowRun.status}</span>
+          <svg className="w-3.5 h-3.5 text-slate-400" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" /></svg>
         </div>
       </div>
-    )}
-  </div>
-);
+
+      {/* Agent rows */}
+      <div className="divide-y divide-slate-50 max-h-[360px] overflow-y-auto custom-scrollbar">
+        {workflowRun.nodes.map(node => {
+          const lastLog = node.logs.length > 0 ? node.logs[node.logs.length - 1] : null;
+          return (
+            <div key={node.id} className="px-4 py-2.5 flex items-start gap-2.5 hover:bg-slate-50/50 transition-colors">
+              {/* Status */}
+              <div className="mt-0.5 flex-shrink-0">
+                {node.status === 'running' ? (
+                  <div className="w-3 h-3 border-2 border-slate-200 border-t-red-500 rounded-full animate-spin" />
+                ) : node.status === 'completed' ? (
+                  <span className="w-3 h-3 rounded-full bg-green-500 block" />
+                ) : node.status === 'failed' ? (
+                  <span className="w-3 h-3 rounded-full bg-red-500 block" />
+                ) : node.status === 'skipped' ? (
+                  <span className="w-3 h-3 rounded-full bg-slate-300 block" />
+                ) : (
+                  <span className="w-3 h-3 rounded-full border-2 border-slate-200 block" />
+                )}
+              </div>
+
+              {/* Content */}
+              <div className="flex-grow min-w-0">
+                <div className="flex items-center gap-2">
+                  <span className={`text-[11px] font-bold truncate ${
+                    node.status === 'running' ? 'text-red-700' :
+                    node.status === 'completed' ? 'text-slate-700' : 'text-slate-400'
+                  }`}>{node.label}</span>
+                  {node.toolCalls.length > 0 && (
+                    <span className="text-[8px] font-mono text-slate-400 flex-shrink-0">{node.toolCalls.length} calls</span>
+                  )}
+                </div>
+                {/* Live log line */}
+                {lastLog && (
+                  <p className="text-[10px] text-slate-400 truncate mt-0.5 font-mono">{lastLog.message}</p>
+                )}
+                {/* LLM preview for completed */}
+                {node.status === 'completed' && node.llmPreview && !lastLog && (
+                  <p className="text-[10px] text-slate-400 truncate mt-0.5 italic">{node.llmPreview}</p>
+                )}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+
+      {/* Run summary footer */}
+      {workflowRun.status === 'completed' && workflowRun.runSummary && (
+        <div className="px-4 py-2.5 bg-green-50 border-t border-green-100">
+          <p className="text-[10px] text-green-700 line-clamp-2">{workflowRun.runSummary}</p>
+        </div>
+      )}
+
+      {/* Currently running hint */}
+      {runningNode && (
+        <div className="px-4 py-2 bg-red-50 border-t border-red-100 flex items-center gap-2">
+          <div className="w-2 h-2 border border-red-300 border-t-red-600 rounded-full animate-spin" />
+          <p className="text-[10px] text-red-600 font-bold truncate">{runningNode.label}</p>
+        </div>
+      )}
+    </div>
+  );
+};
+
+// --- Pipeline Detail Modal (full history + optional React Flow) ---
+const PipelineDetailModal: React.FC<{
+  workflowRun: WorkflowRun;
+  onClose: () => void;
+}> = ({ workflowRun, onClose }) => {
+  const [activeTab, setActiveTab] = useState<'log' | 'graph'>('log');
+  const [graphSelectedNode, setGraphSelectedNode] = useState<string | null>(null);
+  const [expandedNodes, setExpandedNodes] = useState<Set<string>>(() => {
+    // Auto-expand running nodes
+    const running = new Set<string>();
+    workflowRun.nodes.forEach(n => { if (n.status === 'running') running.add(n.id); });
+    return running;
+  });
+
+  const toggleNode = (nodeId: string) => {
+    setExpandedNodes(prev => {
+      const next = new Set(prev);
+      if (next.has(nodeId)) next.delete(nodeId);
+      else next.add(nodeId);
+      return next;
+    });
+  };
+
+  const expandAll = () => setExpandedNodes(new Set(workflowRun.nodes.map(n => n.id)));
+  const collapseAll = () => setExpandedNodes(new Set());
+
+  return (
+    <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-slate-900/70 backdrop-blur-sm">
+      <div className="bg-white w-full max-w-7xl rounded-2xl shadow-2xl overflow-hidden flex flex-col max-h-[90vh]">
+        {/* Header */}
+        <div className="px-6 py-4 border-b border-slate-100 flex items-center justify-between bg-white sticky top-0 z-10">
+          <div className="flex items-center gap-4">
+            <div>
+              <h2 className="text-lg font-black text-slate-900 tracking-tight uppercase">Agent Pipeline</h2>
+              <p className="text-[10px] text-slate-500 font-mono">{workflowRun.town}</p>
+            </div>
+            <span className={`text-[9px] px-2.5 py-1 rounded-full font-bold uppercase ${
+              workflowRun.status === 'running' ? 'bg-red-100 text-red-700 animate-pulse' :
+              workflowRun.status === 'completed' ? 'bg-green-100 text-green-700' :
+              'bg-red-100 text-red-600'
+            }`}>{workflowRun.status}</span>
+          </div>
+          <div className="flex items-center gap-3">
+            {/* Tab toggle */}
+            <div className="flex bg-slate-100 rounded-lg p-0.5">
+              <button
+                onClick={() => setActiveTab('log')}
+                className={`px-3 py-1.5 text-[10px] font-bold uppercase tracking-wider rounded-md transition-colors ${
+                  activeTab === 'log' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500 hover:text-slate-700'
+                }`}
+              >Activity Log</button>
+              <button
+                onClick={() => setActiveTab('graph')}
+                className={`px-3 py-1.5 text-[10px] font-bold uppercase tracking-wider rounded-md transition-colors ${
+                  activeTab === 'graph' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500 hover:text-slate-700'
+                }`}
+              >Pipeline Graph</button>
+            </div>
+            <button onClick={onClose} className="p-1.5 hover:bg-slate-100 rounded-full transition-colors text-slate-400">
+              <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" /></svg>
+            </button>
+          </div>
+        </div>
+
+        {/* Tab content */}
+        {activeTab === 'log' ? (
+          <div className="flex-grow overflow-y-auto custom-scrollbar">
+            {/* Expand/Collapse controls */}
+            <div className="px-6 py-2 border-b border-slate-50 flex items-center gap-3 bg-slate-50/50">
+              <button onClick={expandAll} className="text-[9px] font-bold uppercase tracking-wider text-slate-400 hover:text-red-600 transition-colors">Expand All</button>
+              <span className="text-slate-200">|</span>
+              <button onClick={collapseAll} className="text-[9px] font-bold uppercase tracking-wider text-slate-400 hover:text-red-600 transition-colors">Collapse All</button>
+            </div>
+
+            <div className="divide-y divide-slate-100">
+              {workflowRun.nodes.map(node => {
+                const isExpanded = expandedNodes.has(node.id);
+                const statusColor = node.status === 'completed' ? 'bg-green-500' :
+                  node.status === 'running' ? 'bg-red-500 animate-pulse' :
+                  node.status === 'failed' ? 'bg-red-500' :
+                  node.status === 'skipped' ? 'bg-slate-300' : 'bg-slate-200';
+
+                return (
+                  <div key={node.id}>
+                    {/* Agent header row */}
+                    <div
+                      className="px-6 py-3 flex items-center gap-3 cursor-pointer hover:bg-slate-50 transition-colors"
+                      onClick={() => toggleNode(node.id)}
+                    >
+                      <svg className={`w-3.5 h-3.5 text-slate-400 transition-transform flex-shrink-0 ${isExpanded ? 'rotate-90' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" /></svg>
+                      <span className={`w-2.5 h-2.5 rounded-full flex-shrink-0 ${statusColor}`} />
+                      <span className="text-sm font-bold text-slate-800">{node.label}</span>
+                      <div className="flex items-center gap-2 ml-auto">
+                        {node.toolCalls.length > 0 && (
+                          <span className="text-[9px] font-mono text-slate-400">{node.toolCalls.length} tool calls</span>
+                        )}
+                        {node.logs.length > 0 && (
+                          <span className="text-[9px] font-mono text-slate-400">{node.logs.length} events</span>
+                        )}
+                        <span className={`text-[8px] px-2 py-0.5 rounded-full font-bold uppercase ${
+                          node.status === 'completed' ? 'bg-green-100 text-green-700' :
+                          node.status === 'running' ? 'bg-red-100 text-red-700' :
+                          node.status === 'failed' ? 'bg-red-100 text-red-600' :
+                          'bg-slate-100 text-slate-500'
+                        }`}>{node.status}</span>
+                      </div>
+                    </div>
+
+                    {/* Expanded detail */}
+                    {isExpanded && (
+                      <div className="px-6 pb-4 bg-slate-50/30">
+                        {/* Tool calls */}
+                        {node.toolCalls.length > 0 && (
+                          <div className="mb-3">
+                            <p className="text-[9px] font-black uppercase tracking-widest text-slate-400 mb-2 ml-7">Tool Calls</p>
+                            <div className="ml-7 space-y-1">
+                              {node.toolCalls.map((tc, i) => (
+                                <div key={i} className="flex items-center gap-2 px-3 py-1.5 bg-white rounded-lg border border-slate-100">
+                                  <span className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${
+                                    tc.status === 'VERIFIED' ? 'bg-green-500' : tc.status === 'pending' ? 'bg-slate-300' : 'bg-red-500'
+                                  }`} />
+                                  <span className="text-[10px] font-bold text-slate-700">{tc.tool?.replace(/_/g, ' ')}</span>
+                                  <span className={`text-[8px] px-1.5 py-0.5 rounded font-bold uppercase ml-auto ${
+                                    tc.status === 'VERIFIED' ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-600'
+                                  }`}>{tc.status}</span>
+                                  {tc.error && <span className="text-[9px] text-red-500 font-mono truncate max-w-[200px]">{tc.error}</span>}
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        )}
+
+                        {/* Event log */}
+                        {node.logs.length > 0 && (
+                          <div>
+                            <p className="text-[9px] font-black uppercase tracking-widest text-slate-400 mb-2 ml-7">Event Log</p>
+                            <div className="ml-7 space-y-1">
+                              {node.logs.map((log, i) => (
+                                <div key={i} className="flex items-start gap-2 px-3 py-1.5 bg-white rounded-lg border border-slate-100">
+                                  {log.type === 'tool_start' && <span className="mt-0.5 w-2 h-2 border border-slate-300 border-t-red-500 rounded-full animate-spin flex-shrink-0" />}
+                                  {log.type === 'tool_result' && <span className={`mt-0.5 w-2 h-2 rounded-full flex-shrink-0 ${log.status === 'VERIFIED' ? 'bg-green-500' : 'bg-red-500'}`} />}
+                                  {log.type === 'llm_start' && <span className="mt-0.5 w-2 h-2 border border-blue-300 border-t-blue-600 rounded-full animate-spin flex-shrink-0" />}
+                                  {log.type === 'llm_done' && <span className="mt-0.5 w-2 h-2 bg-blue-500 rounded-full flex-shrink-0" />}
+                                  <div className="min-w-0 flex-grow">
+                                    <p className="text-[10px] text-slate-600 truncate">{log.message}</p>
+                                    {log.preview && (
+                                      <p className="text-[9px] text-slate-400 italic mt-0.5 line-clamp-2">{log.preview}</p>
+                                    )}
+                                  </div>
+                                  <span className="text-[8px] font-mono text-slate-300 flex-shrink-0 mt-0.5">
+                                    {new Date(log.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
+                                  </span>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        )}
+
+                        {/* Summary / LLM preview */}
+                        {node.llmPreview && (
+                          <div className="ml-7 mt-2 p-3 bg-blue-50 border border-blue-100 rounded-lg">
+                            <p className="text-[9px] font-black uppercase tracking-widest text-blue-500 mb-1">LLM Output</p>
+                            <p className="text-[10px] text-blue-800 leading-relaxed">{node.llmPreview}</p>
+                          </div>
+                        )}
+
+                        {/* Empty state */}
+                        {node.toolCalls.length === 0 && node.logs.length === 0 && (
+                          <p className="text-[10px] text-slate-400 italic ml-7 py-2">No activity recorded yet.</p>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+
+            {/* Deltas section */}
+            {workflowRun.deltas.length > 0 && (
+              <div className="px-6 py-4 border-t border-slate-200 bg-slate-50">
+                <p className="text-[9px] font-black uppercase tracking-widest text-slate-400 mb-2">Changes Detected ({workflowRun.deltas.length})</p>
+                <div className="space-y-1">
+                  {workflowRun.deltas.map((d, i) => (
+                    <div key={i} className="flex items-center gap-2 px-3 py-1.5 bg-white rounded-lg border border-slate-100">
+                      <span className={`text-[8px] px-1.5 py-0.5 rounded font-black uppercase flex-shrink-0 ${
+                        d.significance === 'HIGH' ? 'bg-red-100 text-red-700' :
+                        d.significance === 'MEDIUM' ? 'bg-amber-100 text-amber-700' :
+                        'bg-slate-100 text-slate-500'
+                      }`}>{d.significance}</span>
+                      <span className="text-[10px] font-bold text-slate-600">{d.category}</span>
+                      <span className="text-[10px] text-slate-500 truncate">{d.change}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* Run summary */}
+            {workflowRun.runSummary && (
+              <div className="px-6 py-4 border-t border-green-100 bg-green-50">
+                <p className="text-[9px] font-black uppercase tracking-widest text-green-600 mb-1">Run Summary</p>
+                <p className="text-xs text-green-800">{workflowRun.runSummary}</p>
+              </div>
+            )}
+          </div>
+        ) : (
+          /* Pipeline Graph tab */
+          <div className="flex overflow-hidden" style={{ height: '70vh' }}>
+            <div className={`${graphSelectedNode ? 'w-3/5' : 'w-full'} transition-all`}>
+              <PipelineFlow workflowRun={workflowRun} onNodeClick={setGraphSelectedNode} />
+            </div>
+            {graphSelectedNode && (() => {
+              const node = workflowRun.nodes.find(n => n.id === graphSelectedNode);
+              if (!node) return null;
+              return (
+                <div className="w-2/5 border-l border-slate-200 overflow-y-auto custom-scrollbar bg-slate-50">
+                  <div className="px-5 py-4 border-b border-slate-100 bg-white flex items-center justify-between sticky top-0 z-10">
+                    <div className="flex items-center gap-2">
+                      <span className={`w-2.5 h-2.5 rounded-full flex-shrink-0 ${
+                        node.status === 'completed' ? 'bg-green-500' :
+                        node.status === 'running' ? 'bg-red-500 animate-pulse' :
+                        node.status === 'failed' ? 'bg-red-500' : 'bg-slate-300'
+                      }`} />
+                      <h4 className="text-sm font-bold text-slate-800">{node.label}</h4>
+                      <span className={`text-[8px] px-2 py-0.5 rounded-full font-bold uppercase ${
+                        node.status === 'completed' ? 'bg-green-100 text-green-700' :
+                        node.status === 'running' ? 'bg-red-100 text-red-700' :
+                        node.status === 'failed' ? 'bg-red-100 text-red-600' :
+                        'bg-slate-100 text-slate-500'
+                      }`}>{node.status}</span>
+                    </div>
+                    <button onClick={() => setGraphSelectedNode(null)} className="p-1 hover:bg-slate-100 rounded transition-colors text-slate-400">
+                      <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" /></svg>
+                    </button>
+                  </div>
+                  <div className="p-5 space-y-4">
+                    {node.toolCalls.length > 0 && (
+                      <div>
+                        <p className="text-[9px] font-black uppercase tracking-widest text-slate-400 mb-2">Tool Calls ({node.toolCalls.length})</p>
+                        <div className="space-y-1">
+                          {node.toolCalls.map((tc, i) => (
+                            <div key={i} className="flex items-center gap-2 px-3 py-1.5 bg-white rounded-lg border border-slate-100">
+                              <span className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${
+                                tc.status === 'VERIFIED' ? 'bg-green-500' : tc.status === 'pending' ? 'bg-slate-300' : 'bg-red-500'
+                              }`} />
+                              <span className="text-[10px] font-bold text-slate-700">{tc.tool?.replace(/_/g, ' ')}</span>
+                              <span className={`text-[8px] px-1.5 py-0.5 rounded font-bold uppercase ml-auto ${
+                                tc.status === 'VERIFIED' ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-600'
+                              }`}>{tc.status}</span>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                    {node.logs.length > 0 && (
+                      <div>
+                        <p className="text-[9px] font-black uppercase tracking-widest text-slate-400 mb-2">Event Log ({node.logs.length})</p>
+                        <div className="space-y-1">
+                          {node.logs.map((log, i) => (
+                            <div key={i} className="flex items-start gap-2 px-3 py-1.5 bg-white rounded-lg border border-slate-100">
+                              {log.type === 'tool_start' && <span className="mt-0.5 w-2 h-2 border border-slate-300 border-t-red-500 rounded-full animate-spin flex-shrink-0" />}
+                              {log.type === 'tool_result' && <span className={`mt-0.5 w-2 h-2 rounded-full flex-shrink-0 ${log.status === 'VERIFIED' ? 'bg-green-500' : 'bg-red-500'}`} />}
+                              {log.type === 'llm_start' && <span className="mt-0.5 w-2 h-2 border border-blue-300 border-t-blue-600 rounded-full animate-spin flex-shrink-0" />}
+                              {log.type === 'llm_done' && <span className="mt-0.5 w-2 h-2 bg-blue-500 rounded-full flex-shrink-0" />}
+                              <div className="min-w-0 flex-grow">
+                                <p className="text-[10px] text-slate-600">{log.message}</p>
+                                {log.preview && <p className="text-[9px] text-slate-400 italic mt-0.5 line-clamp-3">{log.preview}</p>}
+                              </div>
+                              <span className="text-[8px] font-mono text-slate-300 flex-shrink-0 mt-0.5">
+                                {new Date(log.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
+                              </span>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                    {node.llmPreview && (
+                      <div className="p-3 bg-blue-50 border border-blue-100 rounded-lg">
+                        <p className="text-[9px] font-black uppercase tracking-widest text-blue-500 mb-1">LLM Output</p>
+                        <p className="text-[10px] text-blue-800 leading-relaxed">{node.llmPreview}</p>
+                      </div>
+                    )}
+                    {node.toolCalls.length === 0 && node.logs.length === 0 && (
+                      <p className="text-[10px] text-slate-400 italic py-4 text-center">No activity recorded yet.</p>
+                    )}
+                  </div>
+                </div>
+              );
+            })()}</div>
+        )}
+      </div>
+    </div>
+  );
+};
 
 export default App;

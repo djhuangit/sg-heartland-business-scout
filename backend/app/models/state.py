@@ -8,6 +8,7 @@ import operator
 class ScoutState(TypedDict):
     """Per-run state flowing through the scout pipeline."""
     town: str
+    _run_id: str
     research_directive: dict
 
     # Parallel agent raw outputs (reducers for fan-in)
@@ -27,6 +28,7 @@ class ScoutState(TypedDict):
 class MarathonState(TypedDict):
     """Full marathon run state."""
     town: str
+    _run_id: str
     knowledge_base: Optional[dict]
     research_directive: dict
 

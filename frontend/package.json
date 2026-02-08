@@ -9,14 +9,17 @@
     "preview": "vite preview"
   },
   "dependencies": {
-    "recharts": "^3.6.0",
-    "react": "^19.2.3",
+    "@dagrejs/dagre": "^2.0.3",
     "@google/genai": "^1.37.0",
-    "react-dom": "^19.2.3"
+    "@xyflow/react": "^12.10.0",
+    "react": "^19.2.3",
+    "react-dom": "^19.2.3",
+    "recharts": "^3.6.0"
   },
   "devDependencies": {
     "@types/node": "^22.14.0",
     "@vitejs/plugin-react": "^5.0.0",
+    "playwright": "^1.58.2",
     "typescript": "~5.8.2",
     "vite": "^6.2.0"
   }

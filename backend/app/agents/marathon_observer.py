@@ -3,6 +3,7 @@ from datetime import datetime, timezone
 from loguru import logger
 
 from app.models.state import MarathonState
+from app.routers._event_queue import emit
 
 
 def marathon_observer(state: MarathonState) -> dict:
@@ -16,10 +17,23 @@ def marathon_observer(state: MarathonState) -> dict:
     - Prioritize watch_items
     """
     kb = state.get("knowledge_base")
+    run_id = state.get("_run_id", "")
     now = datetime.now(timezone.utc)
+
+    emit(run_id, "node_started", "marathon_observer")
+    emit(run_id, "agent_log", "marathon_observer", {
+        "type": "tool_start", "tool": "load_kb",
+        "message": f"Loading knowledge base for {state.get('town', '?')}..."
+    })
 
     if not kb:
         logger.info("[observer] {} — scope=full, reason=cold_start", state.get("town", "?"))
+        emit(run_id, "agent_log", "marathon_observer", {
+            "type": "tool_result", "tool": "load_kb",
+            "status": "VERIFIED",
+            "message": "Cold start — no existing KB. Full scope analysis.",
+        })
+        emit(run_id, "node_completed", "marathon_observer")
         return {
             "research_directive": {
                 "scope": "full",
@@ -66,6 +80,13 @@ def marathon_observer(state: MarathonState) -> dict:
 
     scope = "full" if len(categories) >= 3 else "partial"
     logger.info("[observer] {} — scope={}, categories={}", state.get("town", "?"), scope, categories)
+
+    emit(run_id, "agent_log", "marathon_observer", {
+        "type": "tool_result", "tool": "load_kb",
+        "status": "VERIFIED",
+        "message": f"Incremental — scope={scope}, categories={categories}",
+    })
+    emit(run_id, "node_completed", "marathon_observer")
 
     return {
         "research_directive": {
