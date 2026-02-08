@@ -1,9 +1,9 @@
 """Test that all tools return correct provenance envelope structure."""
 
 from app.tools.web_search import search_web
-from app.tools.singstat import fetch_singstat_demographics, fetch_singstat_income
-from app.tools.hdb import fetch_hdb_tenders
-from app.tools.ura import fetch_ura_rental
+from app.tools.singstat import fetch_population_demographics, fetch_household_income
+from app.tools.hdb import fetch_hdb_commercial
+from app.tools.ura import fetch_rental_vacancy
 
 REQUIRED_FIELDS = {"fetch_status", "source_id", "data", "error"}
 
@@ -27,24 +27,24 @@ def test_search_web_envelope():
 
 
 def test_singstat_demographics_envelope():
-    result = fetch_singstat_demographics.invoke({"town": "Tampines"})
+    result = fetch_population_demographics.invoke({"town": "Tampines"})
     _check_envelope(result)
     assert result["source_id"] == "singstat_census"
 
 
 def test_singstat_income_envelope():
-    result = fetch_singstat_income.invoke({"town": "Tampines"})
+    result = fetch_household_income.invoke({"town": "Tampines"})
     _check_envelope(result)
     assert result["source_id"] == "singstat_income"
 
 
-def test_hdb_tenders_envelope():
-    result = fetch_hdb_tenders.invoke({"town": "Tampines"})
+def test_hdb_commercial_envelope():
+    result = fetch_hdb_commercial.invoke({"town": "Tampines"})
     _check_envelope(result)
     assert result["source_id"] == "hdb_tenders"
 
 
 def test_ura_rental_envelope():
-    result = fetch_ura_rental.invoke({"town": "Tampines"})
+    result = fetch_rental_vacancy.invoke({"town": "Tampines"})
     _check_envelope(result)
     assert result["source_id"] == "ura_rental"
