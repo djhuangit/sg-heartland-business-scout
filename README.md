@@ -1,6 +1,6 @@
 # Heartland Scout SG
 
-An intelligent commercial opportunity scout for Singapore's 27 HDB heartland towns. Uses an agentic AI pipeline to gather real-time data from government registries, detect market shifts, and generate investment-grade business recommendations.
+An intelligent commercial opportunity scout for Singapore's 27 HDB heartland towns. Uses an agentic AI pipeline to gather real-time data from government open data APIs, detect market shifts, and generate investment-grade business recommendations.
 
 Built for the Gemini 3 Hackathon.
 
@@ -13,20 +13,17 @@ Built for the Gemini 3 Hackathon.
 - [uv](https://docs.astral.sh/uv/) (Python package manager)
 - A [Google Gemini API key](https://aistudio.google.com/apikey)
 
-### 1. Install frontend dependencies
+### 1. Install dependencies
 
 ```bash
-npm install
+# Frontend
+cd frontend && npm install
+
+# Backend
+cd backend && uv sync
 ```
 
-### 2. Install backend dependencies
-
-```bash
-cd backend
-uv sync
-```
-
-### 3. Configure environment
+### 2. Configure environment
 
 Create `backend/.env`:
 
@@ -34,16 +31,23 @@ Create `backend/.env`:
 GEMINI_API_KEY=your-gemini-api-key
 ```
 
-### 4. Start the backend
+Optionally, add a [data.gov.sg API key](https://guide.data.gov.sg/developer-guide/api-overview/how-to-request-an-api-key) for higher rate limits:
+
+```
+DATAGOV_API_KEY=your-datagov-api-key
+```
+
+### 3. Start the backend
 
 ```bash
 cd backend
 uv run uvicorn app.main:app --port 8000 --reload
 ```
 
-### 5. Start the frontend
+### 4. Start the frontend
 
 ```bash
+cd frontend
 npm run dev
 ```
 
@@ -53,11 +57,11 @@ Open http://localhost:3000, select a town, and click **Identify Gaps**.
 
 ### Live Agentic Workflow Visualizer
 
-When you trigger a scan, the UI replaces the loading spinner with a real-time pipeline view. Each agent node transitions through `pending > running > completed`, with tool call badges showing data provenance:
+When you trigger a scan, the UI shows a real-time pipeline view. Each agent node transitions through `pending > running > completed`, with tool call badges showing data provenance:
 
-- **VERIFIED** — Data successfully fetched from source
-- **UNAVAILABLE** — Source API failed; the system will not hallucinate a replacement
-- **STALE** — Using cached data from a previous run
+- **VERIFIED** -- Data successfully fetched from source
+- **UNAVAILABLE** -- Source API failed; the system will not hallucinate a replacement
+- **STALE** -- Using cached data from a previous run
 
 ### Anti-Hallucination Source Verification
 
@@ -87,6 +91,10 @@ Each recommendation includes:
 
 Enter any business type (e.g. "Cat Cafe", "Pilates Studio") in the Targeted Opportunity Scan card to generate a feasibility study grounded in the town's demographics and commercial landscape.
 
+### Run History
+
+Every scout run is recorded with full tool call details, delta counts, and verification reports. Browse past runs in the left sidebar to compare how analysis evolves over time.
+
 ## Agentic Workflow
 
 The backend runs a LangGraph StateGraph with parallel fan-out/fan-in:
@@ -95,9 +103,9 @@ The backend runs a LangGraph StateGraph with parallel fan-out/fan-in:
 graph TD
     START((Start)) --> Observer[Marathon Observer<br/><i>scope & directive</i>]
 
-    Observer --> Demo[Demographics Agent<br/><i>SingStat, income, web search</i>]
-    Observer --> Comm[Commercial Agent<br/><i>HDB tenders, URA rental, web search</i>]
-    Observer --> Intel[Market Intel Agent<br/><i>business mix, foot traffic, saturation</i>]
+    Observer --> Demo[Demographics Agent<br/><i>Census population, income</i>]
+    Observer --> Comm[Commercial Agent<br/><i>HDB resale, rental vacancy</i>]
+    Observer --> Intel[Market Intel Agent<br/><i>business mix, area context</i>]
 
     Demo --> Verifier[Source Verifier<br/><i>cross-ref tool call logs</i>]
     Comm --> Verifier
@@ -129,23 +137,25 @@ graph TD
 
 ### Data Sources
 
+All data is sourced from [data.gov.sg](https://data.gov.sg) open APIs (Census 2020, HDB, URA). A shared client (`_datagov.py`) handles rate limiting and retries.
+
 | Source | Agent | Data |
 |--------|-------|------|
-| SingStat Table Builder | Demographics | Population, age, race, employment, income |
-| HDB Commercial Tenders | Commercial | Active tender listings, block/street/sqft |
-| URA Property Market | Commercial | Rental benchmarks per area |
-| Google Web Search | All agents | Business mix, foot traffic proxies, saturation |
+| Census 2020 (data.gov.sg) | Demographics | Population by age/sex, ethnicity, household income |
+| HDB Resale & Commercial (data.gov.sg) | Commercial | Resale transactions, prices, flat type mix |
+| URA/HDB Rental (data.gov.sg) | Commercial | Office vacancy rates, HDB median rents |
+| data.gov.sg (multiple datasets) | Market Intel | Area context via intent-based dataset routing |
 
 ## API Endpoints
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| `GET` | `/api/scout/{town}/stream` | SSE stream — runs pipeline with real-time events |
+| `GET` | `/api/scout/{town}/stream` | SSE stream -- runs pipeline with real-time events |
 | `GET` | `/api/scout/{town}/analysis` | Latest AreaAnalysis for a town |
-| `GET` | `/api/scout/{town}/knowledge-base` | Full knowledge base with confidence scores |
-| `GET` | `/api/scout/{town}/changelog` | Change history across marathon runs |
 | `POST` | `/api/dossier/{town}?business_type=X` | Generate custom business dossier |
 | `GET` | `/api/towns` | List all 27 towns with analysis status |
+| `GET` | `/api/runs` | Run history (filter by town, limit) |
+| `GET` | `/api/runs/{run_id}` | Detailed run info with tool calls and deltas |
 | `POST` | `/api/marathon/trigger` | Trigger marathon sweep for all towns |
 | `GET` | `/health` | Health check |
 
@@ -155,26 +165,33 @@ graph TD
 
 **Backend**: Python 3.13, FastAPI, LangGraph, LangChain, Gemini 2.0 Flash
 
-**Data**: SSE (Server-Sent Events), in-memory knowledge base (Postgres-ready)
+**Data**: data.gov.sg open APIs, SSE (Server-Sent Events), in-memory knowledge base (Postgres-ready)
 
 ## Project Structure
 
 ```
 sg-heartland-business-scout/
-├── App.tsx                    # UI + WorkflowVisualizer
-├── types.ts                   # TypeScript interfaces
-├── constants.tsx              # 27 HDB towns + icons
-├── services/
-│   └── api.ts                 # Backend API client
+├── frontend/
+│   ├── App.tsx                    # UI + WorkflowVisualizer
+│   ├── index.html                 # Vite entry HTML
+│   ├── index.tsx                  # React DOM mount
+│   ├── types.ts                   # TypeScript interfaces
+│   ├── constants.tsx              # 27 HDB towns + icons
+│   ├── services/
+│   │   └── api.ts                 # Backend API client
+│   ├── vite.config.ts             # Vite build config
+│   ├── tsconfig.json              # TypeScript config
+│   └── package.json               # npm dependencies
 ├── backend/
 │   ├── app/
-│   │   ├── main.py            # FastAPI + APScheduler
-│   │   ├── config.py          # Environment settings
+│   │   ├── main.py                # FastAPI + APScheduler
+│   │   ├── config.py              # Environment settings
+│   │   ├── logging_config.py      # Loguru setup
 │   │   ├── agents/
-│   │   │   ├── demographics.py
-│   │   │   ├── commercial.py
-│   │   │   ├── market_intel.py
-│   │   │   ├── source_verifier.py
+│   │   │   ├── demographics.py    # Census population & income
+│   │   │   ├── commercial.py      # HDB resale & rental data
+│   │   │   ├── market_intel.py    # Business landscape analysis
+│   │   │   ├── source_verifier.py # Provenance cross-reference
 │   │   │   ├── marathon_observer.py
 │   │   │   ├── delta_detector.py
 │   │   │   ├── knowledge_integrator.py
@@ -184,10 +201,11 @@ sg-heartland-business-scout/
 │   │   │   ├── marathon_graph.py  # Outer marathon loop
 │   │   │   └── dossier_graph.py   # Custom dossier generation
 │   │   ├── tools/
-│   │   │   ├── web_search.py      # Google search w/ provenance
-│   │   │   ├── singstat.py        # SingStat demographics
-│   │   │   ├── hdb.py             # HDB tender scraper
-│   │   │   └── ura.py             # URA rental scraper
+│   │   │   ├── _datagov.py        # Shared data.gov.sg client
+│   │   │   ├── singstat.py        # Census demographics & income
+│   │   │   ├── hdb.py             # HDB resale & commercial
+│   │   │   ├── ura.py             # Rental & vacancy data
+│   │   │   └── web_search.py      # Intent-based dataset router
 │   │   ├── models/
 │   │   │   ├── schemas.py         # Pydantic models
 │   │   │   ├── state.py           # LangGraph state definitions
@@ -196,7 +214,10 @@ sg-heartland-business-scout/
 │   │       └── scout.py           # API endpoints + SSE
 │   └── tests/
 │       └── test_tools.py
-└── docker-compose.yml             # Postgres (optional)
+├── docker-compose.yml             # Postgres (optional)
+├── metadata.json
+├── LICENSE
+└── README.md
 ```
 
 ## Running Tests
