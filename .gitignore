@@ -23,6 +23,11 @@ dist-ssr
 *.sln
 *.sw?
 
+# Python
+__pycache__/
+*.pyc
+.pytest_cache/
+
 # Environment
 .env
 
