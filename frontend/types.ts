@@ -199,6 +199,8 @@ export interface WorkflowNode {
 }
 
 export interface WorkflowRun {
+  runId?: string;
+  startedAt?: string;
   town: string;
   status: 'running' | 'completed' | 'failed';
   nodes: WorkflowNode[];

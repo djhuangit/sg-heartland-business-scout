@@ -9,6 +9,31 @@ import '@xyflow/react/dist/style.css';
 import dagre from '@dagrejs/dagre';
 
 const STORAGE_KEY_PREFIX = 'scout_sg_data_';
+const PIPELINE_HISTORY_PREFIX = 'scout_pipelines_';
+const MAX_PIPELINES_PER_TOWN = 10;
+
+function loadPipelineHistory(town: string): WorkflowRun[] {
+  try {
+    const raw = localStorage.getItem(PIPELINE_HISTORY_PREFIX + town);
+    return raw ? JSON.parse(raw) : [];
+  } catch { return []; }
+}
+
+function savePipelineRun(town: string, run: WorkflowRun): void {
+  const history = loadPipelineHistory(town);
+  const filtered = history.filter(r => r.runId !== run.runId);
+  const updated = [run, ...filtered].slice(0, MAX_PIPELINES_PER_TOWN);
+  try {
+    localStorage.setItem(PIPELINE_HISTORY_PREFIX + town, JSON.stringify(updated));
+  } catch {
+    const trimmed = updated.slice(0, 3);
+    try { localStorage.setItem(PIPELINE_HISTORY_PREFIX + town, JSON.stringify(trimmed)); } catch {}
+  }
+}
+
+function clearPipelineHistory(town: string): void {
+  localStorage.removeItem(PIPELINE_HISTORY_PREFIX + town);
+}
 
 /**
  * Normalize analysis data from the backend to ensure all required fields exist.
@@ -224,8 +249,16 @@ const App: React.FC = () => {
   const [workflowRun, setWorkflowRun] = useState<WorkflowRun | null>(() => {
     if (!town) return null;
     try {
-      const saved = sessionStorage.getItem('scout_workflow_' + town);
-      return saved ? JSON.parse(saved) : null;
+      let restored: WorkflowRun | null = null;
+      const session = sessionStorage.getItem('scout_workflow_' + town);
+      if (session) restored = JSON.parse(session);
+      if (!restored) {
+        const history = loadPipelineHistory(town);
+        restored = history.length > 0 ? history[0] : null;
+      }
+      // A "running" state from storage is stale — no SSE connection exists on refresh
+      if (restored && restored.status === 'running') restored.status = 'failed';
+      return restored;
     } catch { return null; }
   });
   const eventSourceRef = useRef<EventSource | null>(null);
@@ -243,6 +276,10 @@ const App: React.FC = () => {
   const [runHistory, setRunHistory] = useState<RunSummary[]>([]);
   const [selectedRunDetail, setSelectedRunDetail] = useState<RunDetail | null>(null);
   const [isLoadingRunDetail, setIsLoadingRunDetail] = useState(false);
+
+  // Pipeline History State (persisted WorkflowRuns from localStorage)
+  const [pipelineHistory, setPipelineHistory] = useState<WorkflowRun[]>([]);
+  const [selectedHistoricalRun, setSelectedHistoricalRun] = useState<WorkflowRun | null>(null);
 
   // Sync hash → view state
   useEffect(() => {
@@ -298,6 +335,27 @@ const App: React.FC = () => {
     }
   }, [analysis]);
 
+  // Load pipeline from localStorage when navigating to a town (useState initializer only runs on mount)
+  useEffect(() => {
+    if (!town) return;
+    // Don't overwrite a live running pipeline
+    setWorkflowRun(prev => {
+      if (prev && prev.status === 'running') return prev;
+      // Try sessionStorage first (live session), then localStorage (persisted history)
+      try {
+        let restored: WorkflowRun | null = null;
+        const session = sessionStorage.getItem('scout_workflow_' + town);
+        if (session) restored = JSON.parse(session);
+        if (!restored) {
+          const history = loadPipelineHistory(town);
+          restored = history.length > 0 ? history[0] : null;
+        }
+        if (restored && restored.status === 'running') restored.status = 'failed';
+        return restored;
+      } catch { return null; }
+    });
+  }, [town]);
+
   // Persist workflowRun to sessionStorage
   useEffect(() => {
     if (workflowRun && town) {
@@ -305,10 +363,11 @@ const App: React.FC = () => {
     }
   }, [workflowRun, town]);
 
-  // Fetch run history when town changes or after a scan completes
+  // Fetch run history and pipeline history when town changes or after a scan completes
   useEffect(() => {
     if (!town) return;
     fetchRunHistory(town).then(data => setRunHistory(data.runs)).catch(() => setRunHistory([]));
+    setPipelineHistory(loadPipelineHistory(town));
   }, [town, status]);
 
   const handleViewRunDetail = async (runId: string) => {
@@ -357,6 +416,7 @@ const App: React.FC = () => {
     const run: WorkflowRun = {
       town,
       status: 'running',
+      startedAt: new Date().toISOString(),
       nodes: INITIAL_WORKFLOW_NODES.map(n => ({ ...n, toolCalls: [], logs: [] })),
       deltas: [],
       verificationFlags: [],
@@ -376,6 +436,13 @@ const App: React.FC = () => {
         const event: WorkflowEvent = JSON.parse(e.data);
 
         switch (event.event_type) {
+          case 'run_started':
+            setWorkflowRun(prev => prev ? {
+              ...prev,
+              runId: event.detail.run_id,
+              startedAt: event.timestamp,
+            } : prev);
+            break;
           case 'node_started':
             updateNodeStatus(event.node, 'running');
             break;
@@ -423,11 +490,16 @@ const App: React.FC = () => {
           case 'run_completed':
             es.close();
             eventSourceRef.current = null;
-            setWorkflowRun(prev => prev ? {
-              ...prev,
-              status: 'completed',
-              runSummary: event.detail.run_summary,
-            } : prev);
+            setWorkflowRun(prev => {
+              if (!prev) return prev;
+              const completed = {
+                ...prev,
+                status: 'completed' as const,
+                runSummary: event.detail.run_summary,
+              };
+              savePipelineRun(town, completed);
+              return completed;
+            });
             // Fetch the completed analysis
             fetchAnalysis(town)
               .then(data => {
@@ -467,7 +539,12 @@ const App: React.FC = () => {
           case 'run_failed':
             es.close();
             eventSourceRef.current = null;
-            setWorkflowRun(prev => prev ? { ...prev, status: 'failed' } : prev);
+            setWorkflowRun(prev => {
+              if (!prev) return prev;
+              const failed = { ...prev, status: 'failed' as const };
+              savePipelineRun(town, failed);
+              return failed;
+            });
             setError(event.detail.error || 'Pipeline failed');
             setStatus(ScoutStatus.ERROR);
             break;
@@ -573,10 +650,12 @@ const App: React.FC = () => {
                   clearTownCache(town).catch(() => {});
                   localStorage.removeItem(STORAGE_KEY_PREFIX + town);
                   sessionStorage.removeItem('scout_workflow_' + town);
+                  clearPipelineHistory(town);
                   setAnalysis(null);
                   setStatus(ScoutStatus.IDLE);
                   setWorkflowRun(null);
                   setRunHistory([]);
+                  setPipelineHistory([]);
                   setLandingKey(k => k + 1);
                 }}
                 className="px-4 py-2 rounded-md text-sm font-medium border border-slate-200 text-slate-500 hover:text-red-600 hover:border-red-200 transition-colors flex items-center gap-1.5"
@@ -708,36 +787,50 @@ const App: React.FC = () => {
             </div>
             <div className="space-y-2 overflow-y-auto max-h-[280px] pr-1 custom-scrollbar">
               {runHistory.length > 0 ? (
-                runHistory.map((run) => (
-                  <div
-                    key={run.run_id}
-                    onClick={() => handleViewRunDetail(run.run_id)}
-                    className="p-3 bg-slate-50 rounded-xl border border-slate-100 cursor-pointer hover:border-red-200 hover:bg-red-50/20 transition-all group"
-                  >
-                    <div className="flex justify-between items-start mb-1.5">
-                      <div className="flex items-center gap-1.5">
-                        <span className={`w-1.5 h-1.5 rounded-full ${run.status === 'completed' ? 'bg-green-500' : 'bg-red-500'}`} />
-                        <span className="text-[10px] font-bold text-slate-700 group-hover:text-red-600 transition-colors">
-                          Run #{run.run_number}
+                runHistory.map((run) => {
+                  const localPipeline = pipelineHistory.find(p => p.runId === run.run_id);
+                  return (
+                    <div
+                      key={run.run_id}
+                      onClick={() => {
+                        if (localPipeline) {
+                          setSelectedHistoricalRun(localPipeline);
+                        } else {
+                          handleViewRunDetail(run.run_id);
+                        }
+                      }}
+                      className="p-3 bg-slate-50 rounded-xl border border-slate-100 cursor-pointer hover:border-red-200 hover:bg-red-50/20 transition-all group"
+                    >
+                      <div className="flex justify-between items-start mb-1.5">
+                        <div className="flex items-center gap-1.5">
+                          <span className={`w-1.5 h-1.5 rounded-full ${run.status === 'completed' ? 'bg-green-500' : 'bg-red-500'}`} />
+                          <span className="text-[10px] font-bold text-slate-700 group-hover:text-red-600 transition-colors">
+                            Run #{run.run_number}
+                          </span>
+                          {localPipeline && (
+                            <span className="text-[7px] px-1.5 py-0.5 rounded-full font-black uppercase bg-purple-100 text-purple-600">
+                              Pipeline
+                            </span>
+                          )}
+                        </div>
+                        <span className={`text-[7px] px-1.5 py-0.5 rounded-full font-black uppercase ${
+                          run.directive === 'cold_start' ? 'bg-blue-100 text-blue-600' : 'bg-slate-100 text-slate-500'
+                        }`}>
+                          {run.directive === 'cold_start' ? 'Cold Start' : 'Incremental'}
                         </span>
                       </div>
-                      <span className={`text-[7px] px-1.5 py-0.5 rounded-full font-black uppercase ${
-                        run.directive === 'cold_start' ? 'bg-blue-100 text-blue-600' : 'bg-slate-100 text-slate-500'
-                      }`}>
-                        {run.directive === 'cold_start' ? 'Cold Start' : 'Incremental'}
-                      </span>
+                      <p className="text-[9px] font-mono text-slate-400 mb-1.5">
+                        {new Date(run.started_at).toLocaleString()}
+                      </p>
+                      <div className="flex items-center gap-3 text-[8px] font-bold text-slate-400 uppercase tracking-wider">
+                        <span>{(run.duration_ms / 1000).toFixed(1)}s</span>
+                        <span className="text-green-600">{run.verified_count} verified</span>
+                        {run.failed_count > 0 && <span className="text-red-500">{run.failed_count} failed</span>}
+                        <span>{run.delta_count} deltas</span>
+                      </div>
                     </div>
-                    <p className="text-[9px] font-mono text-slate-400 mb-1.5">
-                      {new Date(run.started_at).toLocaleString()}
-                    </p>
-                    <div className="flex items-center gap-3 text-[8px] font-bold text-slate-400 uppercase tracking-wider">
-                      <span>{(run.duration_ms / 1000).toFixed(1)}s</span>
-                      <span className="text-green-600">{run.verified_count} verified</span>
-                      {run.failed_count > 0 && <span className="text-red-500">{run.failed_count} failed</span>}
-                      <span>{run.delta_count} deltas</span>
-                    </div>
-                  </div>
-                ))
+                  );
+                })
               ) : (
                 <div className="py-8 text-center bg-slate-50 rounded-xl border border-dashed border-slate-200">
                   <p className="text-[9px] text-slate-400 font-bold uppercase tracking-widest px-4 italic">No runs yet. Click "Identify Gaps" to start.</p>
@@ -1102,11 +1195,23 @@ const App: React.FC = () => {
         )}
       </main>
 
-      {/* Pipeline Detail Modal */}
+      {/* Pipeline Detail Modal (live run) */}
       {selectedNode && workflowRun && (
         <PipelineDetailModal
           workflowRun={workflowRun}
           onClose={() => setSelectedNode(null)}
+          pipelineHistory={pipelineHistory}
+          onSelectRun={(run) => { setWorkflowRun(run); }}
+        />
+      )}
+
+      {/* Pipeline Detail Modal (historical run) */}
+      {selectedHistoricalRun && (
+        <PipelineDetailModal
+          workflowRun={selectedHistoricalRun}
+          onClose={() => setSelectedHistoricalRun(null)}
+          pipelineHistory={pipelineHistory}
+          onSelectRun={(run) => { setSelectedHistoricalRun(run); }}
         />
       )}
 
@@ -1846,6 +1951,9 @@ const AgentActivityPanel: React.FC<{
           )}
           <h3 className="text-[10px] font-black text-slate-900 uppercase tracking-wider">Agent Pipeline</h3>
           <span className="text-[9px] font-mono text-slate-400">{completedCount}/{workflowRun.nodes.length}</span>
+          {workflowRun.startedAt && (
+            <span className="text-[9px] font-mono text-slate-300">{new Date(workflowRun.startedAt).toLocaleString()}</span>
+          )}
         </div>
         <div className="flex items-center gap-2">
           <span className={`text-[8px] px-2 py-0.5 rounded-full font-bold uppercase ${
@@ -1925,7 +2033,9 @@ const AgentActivityPanel: React.FC<{
 const PipelineDetailModal: React.FC<{
   workflowRun: WorkflowRun;
   onClose: () => void;
-}> = ({ workflowRun, onClose }) => {
+  pipelineHistory?: WorkflowRun[];
+  onSelectRun?: (run: WorkflowRun) => void;
+}> = ({ workflowRun, onClose, pipelineHistory, onSelectRun }) => {
   const [activeTab, setActiveTab] = useState<'log' | 'graph'>('log');
   const [graphSelectedNode, setGraphSelectedNode] = useState<string | null>(null);
   const [expandedNodes, setExpandedNodes] = useState<Set<string>>(() => {
@@ -1962,6 +2072,26 @@ const PipelineDetailModal: React.FC<{
               workflowRun.status === 'completed' ? 'bg-green-100 text-green-700' :
               'bg-red-100 text-red-600'
             }`}>{workflowRun.status}</span>
+            {/* Pipeline history dropdown */}
+            {pipelineHistory && pipelineHistory.length > 0 && onSelectRun && (
+              <select
+                value={workflowRun.runId || workflowRun.startedAt || ''}
+                onChange={(e) => {
+                  const selected = pipelineHistory.find(
+                    p => (p.runId || p.startedAt) === e.target.value
+                  );
+                  if (selected) onSelectRun(selected);
+                }}
+                className="text-[10px] font-mono text-slate-600 bg-slate-100 border border-slate-200 rounded-lg px-2 py-1 cursor-pointer hover:border-red-300 transition-colors"
+              >
+                {pipelineHistory.map((p, i) => (
+                  <option key={p.runId || p.startedAt || i} value={p.runId || p.startedAt || ''}>
+                    {p.startedAt ? new Date(p.startedAt).toLocaleString() : `Run ${i + 1}`}
+                    {p.status === 'completed' ? ' \u2713' : p.status === 'failed' ? ' \u2715' : ' ...'}
+                  </option>
+                ))}
+              </select>
+            )}
           </div>
           <div className="flex items-center gap-3">
             {/* Tab toggle */}
