@@ -4,6 +4,10 @@ An intelligent commercial opportunity scout for Singapore's 27 HDB heartland tow
 
 Built for the Gemini 3 Hackathon.
 
+
+## Demo
+https://sg-heartland-scout.pages.dev/
+
 ## Quick Start
 
 ### Prerequisites
