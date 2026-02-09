@@ -1,7 +1,7 @@
 
 import { AreaAnalysis, Recommendation, RunSummary, RunDetail, TownSummary } from '../types';
 
-const API_BASE = 'http://localhost:8000/api';
+const API_BASE = (import.meta as any).env?.VITE_API_URL || 'http://localhost:8000/api';
 
 export const fetchAnalysis = async (town: string): Promise<AreaAnalysis> => {
   const res = await fetch(`${API_BASE}/scout/${town}/analysis`);

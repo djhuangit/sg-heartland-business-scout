@@ -18,7 +18,9 @@ from app.routers.scout import HDB_TOWNS, _knowledge_bases, _run_history
 setup_logging()
 
 # Prevent leaked semaphore warnings on macOS — uvicorn's reloader uses fork()
-multiprocessing.set_start_method("forkserver", force=True)
+import sys
+if sys.platform == "darwin":
+    multiprocessing.set_start_method("forkserver", force=True)
 
 scheduler = AsyncIOScheduler(
     job_defaults={"coalesce": True, "max_instances": 1},
@@ -108,9 +110,19 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="Heartland Scout SG — Backend", lifespan=lifespan)
 
+import os
+
+_allowed_origins = [
+    "http://localhost:3000",
+]
+_extra_origin = os.environ.get("FRONTEND_URL")
+if _extra_origin:
+    _allowed_origins.append(_extra_origin)
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000"],
+    allow_origins=_allowed_origins,
+    allow_origin_regex=r"https://.*\.sg-heartland-scout\.pages\.dev",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

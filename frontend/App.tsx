@@ -705,6 +705,71 @@ const App: React.FC = () => {
             />
           )}
 
+          {/* Run History */}
+          <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-5">
+            <div className="flex justify-between items-center mb-4">
+              <h3 className="font-black text-slate-900 flex items-center gap-2 uppercase tracking-[0.2em] text-[10px]">
+                <Icons.TrendUp className="w-3 h-3 text-red-600" />
+                Run History
+              </h3>
+              {runHistory.length > 0 && (
+                <span className="text-[9px] font-mono text-slate-400">{runHistory.length} runs</span>
+              )}
+            </div>
+            <div className="space-y-2 overflow-y-auto max-h-[280px] pr-1 custom-scrollbar">
+              {runHistory.length > 0 ? (
+                runHistory.map((run) => {
+                  const localPipeline = pipelineHistory.find(p => p.runId === run.run_id);
+                  return (
+                    <div
+                      key={run.run_id}
+                      onClick={() => {
+                        if (localPipeline) {
+                          setSelectedHistoricalRun(localPipeline);
+                        } else {
+                          handleViewRunDetail(run.run_id);
+                        }
+                      }}
+                      className="p-3 bg-slate-50 rounded-xl border border-slate-100 cursor-pointer hover:border-red-200 hover:bg-red-50/20 transition-all group"
+                    >
+                      <div className="flex justify-between items-start mb-1.5">
+                        <div className="flex items-center gap-1.5">
+                          <span className={`w-1.5 h-1.5 rounded-full ${run.status === 'completed' ? 'bg-green-500' : 'bg-red-500'}`} />
+                          <span className="text-[10px] font-bold text-slate-700 group-hover:text-red-600 transition-colors">
+                            Run #{run.run_number}
+                          </span>
+                          {localPipeline && (
+                            <span className="text-[7px] px-1.5 py-0.5 rounded-full font-black uppercase bg-purple-100 text-purple-600">
+                              Pipeline
+                            </span>
+                          )}
+                        </div>
+                        <span className={`text-[7px] px-1.5 py-0.5 rounded-full font-black uppercase ${
+                          run.directive === 'cold_start' ? 'bg-blue-100 text-blue-600' : 'bg-slate-100 text-slate-500'
+                        }`}>
+                          {run.directive === 'cold_start' ? 'Cold Start' : 'Incremental'}
+                        </span>
+                      </div>
+                      <p className="text-[9px] font-mono text-slate-400 mb-1.5">
+                        {new Date(run.started_at).toLocaleString()}
+                      </p>
+                      <div className="flex items-center gap-3 text-[8px] font-bold text-slate-400 uppercase tracking-wider">
+                        <span>{(run.duration_ms / 1000).toFixed(1)}s</span>
+                        <span className="text-green-600">{run.verified_count} verified</span>
+                        {run.failed_count > 0 && <span className="text-red-500">{run.failed_count} failed</span>}
+                        <span>{run.delta_count} deltas</span>
+                      </div>
+                    </div>
+                  );
+                })
+              ) : (
+                <div className="py-8 text-center bg-slate-50 rounded-xl border border-dashed border-slate-200">
+                  <p className="text-[9px] text-slate-400 font-bold uppercase tracking-widest px-4 italic">No runs yet. Click "Identify Gaps" to start.</p>
+                </div>
+              )}
+            </div>
+          </div>
+
           {analysis && (
             <>
               {/* Open HDB Commercial Tenders - Sidebar Version */}
@@ -773,71 +838,6 @@ const App: React.FC = () => {
               </div>
             </>
           )}
-
-          {/* Run History */}
-          <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-5">
-            <div className="flex justify-between items-center mb-4">
-              <h3 className="font-black text-slate-900 flex items-center gap-2 uppercase tracking-[0.2em] text-[10px]">
-                <Icons.TrendUp className="w-3 h-3 text-red-600" />
-                Run History
-              </h3>
-              {runHistory.length > 0 && (
-                <span className="text-[9px] font-mono text-slate-400">{runHistory.length} runs</span>
-              )}
-            </div>
-            <div className="space-y-2 overflow-y-auto max-h-[280px] pr-1 custom-scrollbar">
-              {runHistory.length > 0 ? (
-                runHistory.map((run) => {
-                  const localPipeline = pipelineHistory.find(p => p.runId === run.run_id);
-                  return (
-                    <div
-                      key={run.run_id}
-                      onClick={() => {
-                        if (localPipeline) {
-                          setSelectedHistoricalRun(localPipeline);
-                        } else {
-                          handleViewRunDetail(run.run_id);
-                        }
-                      }}
-                      className="p-3 bg-slate-50 rounded-xl border border-slate-100 cursor-pointer hover:border-red-200 hover:bg-red-50/20 transition-all group"
-                    >
-                      <div className="flex justify-between items-start mb-1.5">
-                        <div className="flex items-center gap-1.5">
-                          <span className={`w-1.5 h-1.5 rounded-full ${run.status === 'completed' ? 'bg-green-500' : 'bg-red-500'}`} />
-                          <span className="text-[10px] font-bold text-slate-700 group-hover:text-red-600 transition-colors">
-                            Run #{run.run_number}
-                          </span>
-                          {localPipeline && (
-                            <span className="text-[7px] px-1.5 py-0.5 rounded-full font-black uppercase bg-purple-100 text-purple-600">
-                              Pipeline
-                            </span>
-                          )}
-                        </div>
-                        <span className={`text-[7px] px-1.5 py-0.5 rounded-full font-black uppercase ${
-                          run.directive === 'cold_start' ? 'bg-blue-100 text-blue-600' : 'bg-slate-100 text-slate-500'
-                        }`}>
-                          {run.directive === 'cold_start' ? 'Cold Start' : 'Incremental'}
-                        </span>
-                      </div>
-                      <p className="text-[9px] font-mono text-slate-400 mb-1.5">
-                        {new Date(run.started_at).toLocaleString()}
-                      </p>
-                      <div className="flex items-center gap-3 text-[8px] font-bold text-slate-400 uppercase tracking-wider">
-                        <span>{(run.duration_ms / 1000).toFixed(1)}s</span>
-                        <span className="text-green-600">{run.verified_count} verified</span>
-                        {run.failed_count > 0 && <span className="text-red-500">{run.failed_count} failed</span>}
-                        <span>{run.delta_count} deltas</span>
-                      </div>
-                    </div>
-                  );
-                })
-              ) : (
-                <div className="py-8 text-center bg-slate-50 rounded-xl border border-dashed border-slate-200">
-                  <p className="text-[9px] text-slate-400 font-bold uppercase tracking-widest px-4 italic">No runs yet. Click "Identify Gaps" to start.</p>
-                </div>
-              )}
-            </div>
-          </div>
 
           {/* Pulse Timeline */}
           <div
@@ -1305,7 +1305,6 @@ const App: React.FC = () => {
             </div>
 
             <div className="p-6 overflow-y-auto flex-grow space-y-6 custom-scrollbar">
-              {/* Run Summary */}
               {selectedRunDetail.run_summary && (
                 <div className="p-4 bg-green-50 border border-green-100 rounded-xl">
                   <p className="text-[9px] font-black uppercase tracking-widest text-green-600 mb-1">Summary</p>
@@ -1313,7 +1312,6 @@ const App: React.FC = () => {
                 </div>
               )}
 
-              {/* Error (if failed) */}
               {selectedRunDetail.error && (
                 <div className="p-4 bg-red-50 border border-red-100 rounded-xl">
                   <p className="text-[9px] font-black uppercase tracking-widest text-red-600 mb-1">Error</p>
@@ -1321,7 +1319,6 @@ const App: React.FC = () => {
                 </div>
               )}
 
-              {/* Tool Calls */}
               <div>
                 <h4 className="text-[10px] font-black uppercase tracking-widest text-slate-400 mb-3">
                   Tool Calls ({selectedRunDetail.tool_calls.length})
@@ -1344,7 +1341,6 @@ const App: React.FC = () => {
                 </div>
               </div>
 
-              {/* Deltas */}
               {selectedRunDetail.deltas.length > 0 && (
                 <div>
                   <h4 className="text-[10px] font-black uppercase tracking-widest text-slate-400 mb-3">
@@ -1376,7 +1372,6 @@ const App: React.FC = () => {
                 </div>
               )}
 
-              {/* Verification Report */}
               {selectedRunDetail.verification_report?.categories && (
                 <div>
                   <h4 className="text-[10px] font-black uppercase tracking-widest text-slate-400 mb-3">
@@ -1395,7 +1390,6 @@ const App: React.FC = () => {
                 </div>
               )}
 
-              {/* Run ID */}
               <div className="pt-2 border-t border-slate-100">
                 <p className="text-[9px] font-mono text-slate-400">
                   Run ID: {selectedRunDetail.run_id}
@@ -2025,6 +2019,7 @@ const AgentActivityPanel: React.FC<{
           <p className="text-[10px] text-red-600 font-bold truncate">{runningNode.label}</p>
         </div>
       )}
+
     </div>
   );
 };
