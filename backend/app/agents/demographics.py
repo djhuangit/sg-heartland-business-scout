@@ -23,9 +23,12 @@ STRICT DATA INTEGRITY RULES:
 
 DATA FORMAT: Tool results contain structured JSON from data.gov.sg Census 2020:
 - singstat_census provides: total_population, male_population, female_population,
-  age_distribution (dict of age_band -> count), ethnicity (dict of ethnic fields -> count)
-- singstat_income provides: income_distribution (dict of income_band -> household_count)
-  e.g. {"Below_1_000": "1389", "1_000_1_999": "4043", ...}
+  age_segments (pre-computed [{label, value, count}] with 5 life-stage groups:
+    Children 0-14, Youth 15-24, Working Adults 25-44, Mid-Career 45-64, Seniors 65+),
+  ethnicity (dict of ethnic fields -> count)
+- singstat_income provides: income_distribution (dict of income_band -> household_count),
+  AND pre-computed: median_household_income (int SGD), income_per_capita (int SGD),
+  wealth_tier (string), total_households (int)
 - web_search provides: supplementary data from government datasets
 
 Your job: Extract demographics and wealth metrics for the given town.
@@ -34,12 +37,17 @@ Output a JSON object with:
 - demographicData: {residentPopulation, planningArea, ageDistribution, raceDistribution, employmentStatus, dataSourceUrl}
 - discoveryLogs: list of {timestamp, action, result} entries documenting your research steps
 
-For wealthTier, classify based on income distribution:
-- "Mass Market" if majority of households earn < $5,000/month
-- "Upper Mid" if significant portion earns $5,000-$10,000
-- "Affluent" if significant portion earns > $10,000
-- "Silver Economy" if 65+ age group exceeds 20% of population
-For distributions, provide [{label, value}] arrays with percentage values.
+CRITICAL: For wealthMetrics, use the pre-computed values from singstat_income:
+- medianHouseholdIncome: format as "SGD X,XXX" using the median_household_income value
+- medianHouseholdIncomePerCapita: format as "SGD X,XXX" using the income_per_capita value
+- wealthTier: use the wealth_tier value directly
+- Override wealthTier to "Silver Economy" if Seniors (65+) value exceeds 20%
+- privatePropertyRatio: estimate from area context (e.g. "15%" for typical HDB towns)
+
+CRITICAL: For ageDistribution, use the pre-computed age_segments array directly.
+Copy the label and value fields into [{label, value}] format. Do NOT break them into finer bands.
+
+For raceDistribution and employmentStatus, provide [{label, value}] arrays with percentage values.
 Calculate percentages from the raw counts in the Census data.
 """
 
