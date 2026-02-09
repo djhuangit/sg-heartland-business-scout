@@ -97,7 +97,7 @@ def market_intel_agent(state: ScoutState) -> dict:
     })
 
     llm = ChatGoogleGenerativeAI(
-        model="gemini-2.0-flash",
+        model="gemini-3-flash-preview",
         google_api_key=settings.gemini_api_key,
     )
 
@@ -111,7 +111,7 @@ def market_intel_agent(state: ScoutState) -> dict:
 
     emit(run_id, "agent_log", "market_intel_agent", {
         "type": "llm_start",
-        "message": f"Analyzing market intelligence with Gemini 2.0 Flash ({len(tool_summary)} chars input)..."
+        "message": f"Analyzing market intelligence with Gemini 3 Flash ({len(tool_summary)} chars input)..."
     })
 
     response = llm.invoke([

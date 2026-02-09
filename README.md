@@ -207,7 +207,7 @@ All data is sourced from [data.gov.sg](https://data.gov.sg) open APIs (Census 20
 
 **Frontend**: React 19, TypeScript, Vite, Recharts, React Flow, Tailwind CSS
 
-**Backend**: Python 3.13, FastAPI, LangGraph, LangChain, Gemini 2.0 Flash, APScheduler
+**Backend**: Python 3.13, FastAPI, LangGraph, LangChain, Gemini 3 Flash, APScheduler
 
 **Data**: data.gov.sg open APIs, SSE (Server-Sent Events), in-memory knowledge base (Postgres-ready)
 

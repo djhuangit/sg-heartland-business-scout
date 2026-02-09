@@ -110,7 +110,7 @@ def demographics_agent(state: ScoutState) -> dict:
 
     # Step 2: Use LLM to interpret the tool results
     llm = ChatGoogleGenerativeAI(
-        model="gemini-2.0-flash",
+        model="gemini-3-flash-preview",
         google_api_key=settings.gemini_api_key,
     )
 
@@ -124,7 +124,7 @@ def demographics_agent(state: ScoutState) -> dict:
 
     emit(run_id, "agent_log", "demographics_agent", {
         "type": "llm_start",
-        "message": f"Analyzing demographics with Gemini 2.0 Flash ({len(tool_summary)} chars input)..."
+        "message": f"Analyzing demographics with Gemini 3 Flash ({len(tool_summary)} chars input)..."
     })
 
     response = llm.invoke([

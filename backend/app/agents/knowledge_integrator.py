@@ -107,13 +107,13 @@ def knowledge_integrator(state: MarathonState) -> dict:
     context_parts.append(f"\n=== DELTAS ===\n{json.dumps(deltas, indent=2)[:1000]}")
 
     llm = ChatGoogleGenerativeAI(
-        model="gemini-2.0-flash",
+        model="gemini-3-flash-preview",
         google_api_key=settings.gemini_api_key,
     )
 
     emit(run_id, "agent_log", "knowledge_integrator", {
         "type": "llm_start",
-        "message": f"Synthesizing AreaAnalysis with Gemini 2.0 Flash..."
+        "message": f"Synthesizing AreaAnalysis with Gemini 3 Flash..."
     })
 
     response = llm.invoke([

@@ -51,7 +51,7 @@ async def generate_dossier(town: str, business_type: str, analysis: dict) -> dic
     )
 
     llm = ChatGoogleGenerativeAI(
-        model="gemini-2.0-flash",
+        model="gemini-3-flash-preview",
         google_api_key=settings.gemini_api_key,
     )
 
